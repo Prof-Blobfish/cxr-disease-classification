@@ -29,6 +29,7 @@ from datasets import build_datasets
 from transforms import build_transforms
 from models.factory import build_model, build_parameter_groups
 from metrics import compute_multilabel_metrics, per_class_metrics_to_frame
+from run_layout import build_run_layout
 
 # ====================== Config & Setup ======================
 
@@ -45,11 +46,16 @@ def load_run_config(config_path: str | Path) -> dict:
     if not isinstance(cfg, dict):
         raise TypeError(f"Expected a YAML mapping in {config_path}")
 
-    run_name = config_path.stem
-    run_dir = (PROJECT_ROOT / cfg["output_dir"] / run_name).resolve()
+    layout = build_run_layout(
+        cfg=cfg,
+        project_root=PROJECT_ROOT,
+        config_path=config_path,
+    )
 
-    cfg["run_name"] = run_name
-    cfg["run_dir"] = str(run_dir)
+    cfg["run_name"] = layout.run_name
+    cfg["run_group"] = layout.run_group
+    cfg["seed_dir"] = layout.seed_dir
+    cfg["run_dir"] = str(layout.run_dir)
 
     return cfg
 
@@ -188,6 +194,8 @@ def load_history_csv(run_dir: str | Path) -> list[dict[str, float | int]]:
 def history_metric_value(row: dict[str, float | int], metric_name: str) -> float:
     if metric_name == "val_macro_auroc":
         return float(row["val_macro_auroc"])
+    if metric_name == "val_macro_auprc":
+        return float(row["val_macro_auprc"])
     if metric_name == "val_loss":
         return float(row["val_loss"])
     raise ValueError(f"Unsupported checkpoint metric for resume: {metric_name}")
@@ -271,6 +279,7 @@ def load_resume_checkpoint(
         device: torch.device,
         scheduler=None,
         train_generator: torch.Generator | None = None,
+        scaler=None,
 ) -> dict[str, object]:
     checkpoint = torch.load(
         Path(checkpoint_path),
@@ -283,6 +292,9 @@ def load_resume_checkpoint(
 
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    if scaler is not None and "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     restore_rng_state(checkpoint, train_generator=train_generator)
     return checkpoint
@@ -379,6 +391,10 @@ def train_one_epoch(
         criterion: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
+        scaler=None,
+        use_amp: bool = False,
+        amp_dtype: torch.dtype = torch.float16,
+        use_channels_last: bool = False,
         max_batches: int | None = None,
         progress_desc: str = "Train",
 ) -> dict[str, float]:
@@ -401,18 +417,31 @@ def train_one_epoch(
 
     for batch_idx, batch in enumerate(progress_bar):
         images = batch["image"].to(device, non_blocking=True)
+        if use_channels_last:
+            images = images.contiguous(memory_format=torch.channels_last)
+
         targets = batch["target"].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
-        logits = model(images)
-        loss = criterion(logits, targets)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=amp_dtype,
+            enabled=use_amp,
+        ):
+            logits = model(images)
+            loss = criterion(logits, targets)
 
         if not torch.isfinite(loss):
             raise ValueError(f"Non-finite loss at batch {batch_idx}: {loss.item()}")
-        
-        loss.backward()
-        optimizer.step()
+
+        if scaler is not None and scaler.is_enabled():
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         batch_size = images.size(0)
         running_loss += loss.item() * batch_size
@@ -438,6 +467,9 @@ def evaluate_one_epoch(
         eval_loader: DataLoader,
         criterion: torch.nn.Module,
         device: torch.device,
+        use_amp: bool = False,
+        amp_dtype: torch.dtype = torch.float16,
+        use_channels_last: bool = False,
         max_batches: int | None = None,
         progress_desc: str = "Val",
 ) -> dict[str, object]:
@@ -465,10 +497,18 @@ def evaluate_one_epoch(
     with torch.no_grad():
         for batch_idx, batch in enumerate(progress_bar):
             images = batch["image"].to(device, non_blocking=True)
+            if use_channels_last:
+                images = images.contiguous(memory_format=torch.channels_last)
+
             targets = batch["target"].to(device, non_blocking=True)
 
-            logits = model(images)
-            loss = criterion(logits, targets)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=amp_dtype,
+                enabled=use_amp,
+            ):
+                logits = model(images)
+                loss = criterion(logits, targets)
 
             if not torch.isfinite(loss):
                 raise ValueError(
@@ -606,7 +646,8 @@ def safe_git_commit(project_root: Path) -> str | None:
 
 def build_reproducibility_payload(cfg: dict) -> dict[str, object]:
     canonical_cfg = dict(cfg)
-    canonical_cfg.pop("run_dir", None)
+    for key in ["run_dir", "output_dir", "run_name", "run_group", "seed_dir"]:
+        canonical_cfg.pop(key, None)
 
     canonical_cfg_text = yaml.safe_dump(canonical_cfg, sort_keys=True)
 
@@ -675,6 +716,8 @@ def build_run_summary_payload(
 
     return {
         "run_name": str(cfg["run_name"]),
+        "run_group": str(cfg["run_group"]),
+        "seed_dir": str(cfg["seed_dir"]),
         "model_name": str(cfg["model_name"]),
         "run_dir": str(run_dir),
         "status": "completed",
@@ -893,6 +936,8 @@ def resolve_checkpoint_metric(
 
     if metric_name == "val_macro_auroc":
         metric_value = metric_summary["macro_auroc"]
+    elif metric_name == "val_macro_auprc":
+        metric_value = metric_summary["macro_auprc"]
     elif metric_name == "val_loss":
         metric_value = split_metrics["loss"]
     else:
@@ -934,6 +979,7 @@ def save_checkpoint(
         cfg: dict,
         scheduler=None,
         train_generator: torch.Generator | None = None,
+        scaler=None,
 ) -> Path:
     checkpoint_path = Path(checkpoint_path)
 
@@ -952,6 +998,9 @@ def save_checkpoint(
 
     payload.update(capture_rng_state(train_generator=train_generator))
 
+    if scaler is not None and scaler.is_enabled():
+        payload["scaler_state_dict"] = scaler.state_dict()
+
     torch.save(payload, checkpoint_path)
     return checkpoint_path
 
@@ -967,6 +1016,7 @@ def persist_epoch_state(
         best_metric: float | None,
         scheduler=None,
         train_generator: torch.Generator | None = None,
+        scaler=None,
 ) -> dict[str, Path]:
     run_dir = Path(run_dir)
 
@@ -981,6 +1031,7 @@ def persist_epoch_state(
         cfg=cfg,
         scheduler=scheduler,
         train_generator=train_generator,
+        scaler=scaler,
     )
 
     return {
@@ -1002,6 +1053,7 @@ def persist_best_validation_artifacts(
         target_columns: list[str],
         scheduler=None,
         train_generator: torch.Generator | None = None,
+        scaler=None,
 ) -> dict[str, Path]:
     run_dir = Path(run_dir)
 
@@ -1015,6 +1067,7 @@ def persist_best_validation_artifacts(
         cfg=cfg,
         scheduler=scheduler,
         train_generator=train_generator,
+        scaler=scaler,
     )
 
     best_val_metrics_path = save_metrics_json(
@@ -1173,6 +1226,20 @@ def main() -> None:
     print(f"Using device: {device}")
     use_cuda = device.type == "cuda"
 
+    use_amp = bool(cfg.get("use_amp", False)) and use_cuda
+    amp_dtype_name = str(cfg.get("amp_dtype", "float16")).lower()
+    if amp_dtype_name not in {"float16", "bfloat16"}:
+        raise ValueError(f"Unsupported amp_dtype: {amp_dtype_name}")
+
+    amp_dtype = torch.float16 if amp_dtype_name == "float16" else torch.bfloat16
+
+    scaler = torch.amp.GradScaler(
+        enabled=use_amp and amp_dtype == torch.float16
+    )
+
+    print(f"AMP enabled: {use_amp}")
+    print(f"AMP dtype: {amp_dtype_name}")
+
     loader_common = {
         "batch_size": cfg["batch_size"],
         "num_workers": NUM_WORKERS,
@@ -1202,7 +1269,13 @@ def main() -> None:
         **loader_common,
     )
 
+    use_channels_last = bool(cfg.get("channels_last", False)) and use_cuda
+    print(f"Channels last: {use_channels_last}")
+
     model = build_model(cfg, num_classes=len(bundle.class_names)).to(device)
+    if use_channels_last:
+        model = model.to(memory_format=torch.channels_last)
+
     param_groups = build_parameter_groups(model, cfg)
 
     criterion = build_criterion(
@@ -1243,6 +1316,7 @@ def main() -> None:
             device=device,
             scheduler=scheduler,
             train_generator=train_generator,
+            scaler=scaler,
         )
 
         history = load_history_csv(run_dir)
@@ -1276,26 +1350,48 @@ def main() -> None:
 
     stop_reason = "max_epochs"
 
+    use_compile = bool(cfg.get("compile_model", False)) and use_cuda
+    compile_mode = str(cfg.get("compile_mode", "reduce-overhead"))
+
+    runtime_model = model
+    if use_compile:
+        try:
+            runtime_model = torch.compile(model, mode=compile_mode)
+        except Exception as exc:
+            print(f"torch.compile disabled: {exc}")
+            runtime_model = model
+
+    print(f"Compile model: {use_compile}")
+    if use_compile:
+        print(f"Compile mode: {compile_mode}")
+
     for epoch in range(start_epoch, num_epochs + 1):
         print(f"=== Epoch {epoch} / {num_epochs} ===")
 
         train_metrics = train_one_epoch(
-            model=model,
+            model=runtime_model,
             train_loader=train_loader,
             criterion=criterion,
             optimizer=optimizer,
             device=device,
             max_batches=train_max_batches,
             progress_desc=f"Train {epoch}/{num_epochs}",
+            scaler=scaler,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            use_channels_last=use_channels_last,
         )
 
         val_metrics = evaluate_one_epoch(
-            model=model,
+            model=runtime_model,
             eval_loader=val_loader,
             criterion=criterion,
             device=device,
             max_batches=val_max_batches,
             progress_desc=f"Val {epoch}/{num_epochs}",
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            use_channels_last=use_channels_last,
         )
 
         metric_summary = compute_multilabel_metrics(
@@ -1335,13 +1431,14 @@ def main() -> None:
             epoch=epoch,
             run_dir=run_dir,
             history=history,
-            model=model,
+            model=runtime_model,
             optimizer=optimizer,
             cfg=cfg,
             current_metric=current_metric,
             best_metric=best_metric,
             scheduler=scheduler,
             train_generator=train_generator,
+            scaler=scaler,
         )
 
         best_artifacts = None
@@ -1359,6 +1456,7 @@ def main() -> None:
                 target_columns=bundle.target_columns,
                 scheduler=scheduler,
                 train_generator=train_generator,
+                scaler=scaler,
             )
 
         print_epoch_summary(
@@ -1407,6 +1505,9 @@ def main() -> None:
         device=device,
         max_batches=None,
         progress_desc="Test",
+        use_amp=use_amp,
+        amp_dtype=amp_dtype,
+        use_channels_last=use_channels_last,
     )
 
     test_metric_summary = compute_multilabel_metrics(

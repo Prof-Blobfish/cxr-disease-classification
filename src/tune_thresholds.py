@@ -237,9 +237,15 @@ def save_thresholded_predictions_csv(
         output_path: Path,
         val_predictions_df: pd.DataFrame,
         test_predictions_df: pd.DataFrame,
+        class_names: list[str],
         pred_columns: list[str],
         threshold_by_class: dict[str, float],
 ) -> Path:
+    if len(class_names) != len(pred_columns):
+        raise ValueError("class_names and pred_columns must have matching lengths.")
+
+    class_pred_pairs = list(zip(class_names, pred_columns))
+
     def build_split_frame(df: pd.DataFrame) -> pd.DataFrame:
         base_columns = [
             column for column in ["epoch", "split", "image_id"]
@@ -248,13 +254,16 @@ def save_thresholded_predictions_csv(
         output_df = df[base_columns].copy()
         output_df["threshold_scheme"] = "tuned"
 
-        for pred_column in pred_columns:
-            class_name = pred_column.removeprefix("pred_")
+        for class_name, pred_column in class_pred_pairs:
+            label_suffix = pred_column.removeprefix("pred_")
             probs = pd.to_numeric(df[pred_column], errors="coerce")
             if probs.isna().any():
                 raise ValueError(f"Non-numeric prediction column: {pred_column}")
 
-            output_df[f"pred_label_{class_name}"] = (
+            if class_name not in threshold_by_class:
+                raise KeyError(f"Missing threshold for class: {class_name}")
+
+            output_df[f"pred_label_{label_suffix}"] = (
                 probs.to_numpy(dtype="float32") >= float(threshold_by_class[class_name])
             ).astype("int64")
 
@@ -540,6 +549,7 @@ def main() -> None:
         output_path=run_dir / "thresholded_predictions_tuned.csv",
         val_predictions_df=val_predictions_df,
         test_predictions_df=test_predictions_df,
+        class_names=class_names,
         pred_columns=pred_columns,
         threshold_by_class=threshold_by_class,
     )
