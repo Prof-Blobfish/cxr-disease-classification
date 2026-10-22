@@ -1,0 +1,5 @@
+# Does chest-X-ray pretraining beat ImageNet? Compare with densenet121_384 (same recipe, ImageNet init).
+base_config: experiments/densenet121_xrv_mimic_nb.yaml
+overrides:
+  image_size: 384
+seeds: [42]

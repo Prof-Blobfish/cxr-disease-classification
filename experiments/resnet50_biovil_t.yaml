@@ -1,0 +1,45 @@
+# ResNet-50 initialised from Microsoft's BioViL-T image encoder (trained with radiology reports
+# on MIMIC-CXR only; no NIH images), otherwise identical to resnet50_v2. Weights converted from
+# huggingface.co/microsoft/BiomedVLP-BioViL-T biovil_t_image_model_proj_size_128.pt (encoder.encoder.*).
+# BioViL-T takes pixels in [0, 1] with no mean/std normalisation (checked against its BatchNorm stats).
+model_name: resnet50
+pretrained: false
+selection_metric: clinical_score
+split_seed: 0
+deterministic: false
+use_amp: true
+amp_dtype: float16
+channels_last: true
+compile_model: true
+image_size: 448
+batch_size: 32
+num_epochs: 10
+warmup_epochs: 1
+patience: null            # train the full schedule; the best epoch is still kept
+optimizer:
+  backbone_lr: 1.0e-04
+  head_lr: 1.0e-03
+  weight_decay: 0.01
+scheduler: cosine
+ema_decay: 0.999
+loss: bce                 # weighted_bce = pos_weight-balanced BCE (v7)
+tta_hflip: true
+augmentation:
+  train:
+    random_resized_crop_scale: [0.75, 1.0]
+    horizontal_flip: true
+    rotation_deg: 15
+    brightness: 0.15
+    contrast: 0.15
+clinical_score:
+  sensitivity_range: [0.90, 0.99]
+  prevalence_weight_power: 0.5
+  ranking_weight: 0.6
+normalization:
+  mean: [0.0, 0.0, 0.0]
+  std: [1.0, 1.0, 1.0]
+domain_pretrained:
+  path: weights/biovil_t_resnet50.pt
+  source: "microsoft/BiomedVLP-BioViL-T, biovil_t_image_model_proj_size_128.pt (MIMIC-CXR)"
+  sha256: "3d8f45efdb74f3773fd4f38a0c0e424b521f8a65a8556b3fb8870d64038d9d32"
+  backbone_only: true

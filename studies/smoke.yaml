@@ -1,0 +1,9 @@
+# Pipeline smoke test: two 1-epoch trials, two seeds. Run after changing code.
+base_config: experiments/convnext_tiny_v7.yaml
+overrides:
+  num_epochs: 1
+  image_size: 128
+seeds: [42, 44]
+n_trials: 2
+search_space:
+  optimizer.head_lr: {low: 6.0e-4, high: 2.0e-3, log: true}

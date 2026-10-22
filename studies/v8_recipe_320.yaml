@@ -1,0 +1,8 @@
+# Does the v8 recipe beat v7, and does it want plain or pos_weight-balanced BCE?
+# Baseline: the existing v7@320 seeds (outputs/runs/convnext_tiny_lr_refine_confirm1).
+base_config: experiments/convnext_tiny_v8.yaml
+seeds: [42, 44]
+sampler: grid
+variants:
+  bce: {}
+  weighted_bce: {loss: weighted_bce}

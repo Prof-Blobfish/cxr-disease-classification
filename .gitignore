@@ -1,7 +1,6 @@
-# Experiments and output files
-experiments/
+# Training outputs (configs in experiments/ and studies/ are tracked)
 outputs/
-studies/
+experiments/generated/
 
 # Python virtual environments
 .venv/
@@ -66,3 +65,4 @@ build/
 *.swp
 *.swo
 *~
+weights/

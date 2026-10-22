@@ -1,0 +1,6 @@
+# Seed sweep: the v7 baseline at 448px on three seeds (a study with no search space).
+base_config: experiments/convnext_tiny_v7.yaml
+overrides:
+  image_size: 448
+  batch_size: 16
+seeds: [42, 44, 46]

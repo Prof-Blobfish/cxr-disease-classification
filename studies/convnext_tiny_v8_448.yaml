@@ -1,0 +1,8 @@
+# The v8 recipe at 448px on three seeds, for the final ensemble. Best epoch at 320px was 6-8 of 12,
+# so the schedule is shortened to 9 epochs to save time.
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  image_size: 448
+  batch_size: 16
+  num_epochs: 9
+seeds: [42, 44, 46]

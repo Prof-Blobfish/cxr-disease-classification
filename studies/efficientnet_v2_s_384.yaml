@@ -1,0 +1,5 @@
+# EfficientNetV2-S with the v8 recipe at 384px, for ensemble diversity.
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  image_size: 384
+seeds: [42, 44]

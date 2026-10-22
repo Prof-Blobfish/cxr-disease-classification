@@ -1,469 +1,256 @@
 # CXR Disease Classification
 
-Train, evaluate, and compare multilabel chest X-ray classifiers with reproducible seed sweeps, validation-based threshold tuning, grouped run outputs, and study-level summaries.
+Multilabel classification of the 14 NIH ChestX-ray14 findings, with patient-level
+splits, a clinically motivated selection metric, and Optuna-driven studies in which
+every trial is averaged over several training seeds.
 
-The current pipeline is centered on:
-
-- seed-agnostic baseline configs in `experiments/`
-- study YAMLs in `studies/`
-- grouped outputs under `outputs/runs/<run_group>/seed<train_seed>/`
-- one canonical per-run summary in `run_summary.json`
-- study execution through `src/study_runner.py`
-
-## What This Repository Currently Supports
-
-- single-run training with checkpointing and resume
-- validation and test ranking metrics: macro AUROC and macro AUPRC
-- per-class ranking metrics
-- per-class threshold tuning on validation predictions
-- thresholded macro metrics: precision, recall, F1, specificity
-- grouped seed summaries for one profile
-- study-level execution, ranking, and leaderboard outputs
-
-## Supported Backbones
-
-Current model support includes:
-
-- DenseNet121
-- ResNet50
-- ConvNeXt-Tiny
-
-## Repository Layout
+## The pipeline in one picture
 
 ```text
-src/
-  config.py
-  data.py
-  datasets.py
-  metrics.py
-  plot.py
-  run_layout.py
-  study_runner.py
-  train.py
-  transforms.py
-  tune_thresholds.py
-  models/
-    factory.py
-
-experiments/
-  *.yaml
-  generated/
-
-studies/
-  *.yaml
-
-outputs/
-  runs/
-  experiment_summaries/
-
-notebooks/
-  00_data_exploration.ipynb
+experiments/<config>.yaml ──► train.py ──► outputs/experiments/<config>/seed<N>/      (one run)
+studies/<study>.yaml ──────► study.py ──► outputs/studies/<study>/trial_<k>/seed<N>/ (many runs)
+                                               │
+                                               ├──► report.py   (thresholds, plots, leaderboards)
+                                               └──► ensemble.py ──► outputs/ensembles/<name>/
 ```
+
+- **`train.py`** trains one config on one seed. It is idempotent: a finished run is
+  returned as-is, and an interrupted run resumes from its last epoch.
+- **`study.py`** is the only orchestrator. A study is a base config plus overrides,
+  optionally with named `variants` and/or a `search_space`. Each trial trains every
+  seed in `seeds` and is scored by the *mean* validation `selection_metric`. Seed
+  sweeps, A/B comparisons and hyperparameter searches are all just studies.
+- **`report.py`** derives everything else (per-class metrics, thresholds, plots,
+  study leaderboards) from saved predictions, so it can be re-run at any time.
+- **`ensemble.py`** combines finished runs into an ensemble chosen on validation.
+  Its output looks like a run, so `report.py` works on it too.
+
+One setting decides what "best" means: **`selection_metric`** in the config. It
+chooses the checkpoint, drives early stopping, is reported to the Optuna pruner and
+ranks study trials.
 
 ## Setup
 
-### 1. Install dependencies
-
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu132
-pip install python-dotenv pandas numpy matplotlib pyyaml scikit-learn tqdm jupyter
+pip install python-dotenv pandas numpy matplotlib pyyaml scikit-learn tqdm optuna optuna-dashboard jupyter
 ```
 
-### 2. Configure the dataset path
-
-Create a `.env` file in the project root:
+Create `.env` in the project root:
 
 ```env
-DATASET_PATH=/absolute/path/to/your/dataset
+DATASET_PATH=/absolute/path/to/nih-chest-xrays
 ```
 
-### 3. Expected dataset contents
+The dataset directory must contain `Data_Entry_2017.csv`, `BBox_List_2017.csv`,
+`train_val_list.txt`, `test_list.txt` and images under `images_*/images/*.png`.
 
-The current data-loading code expects a dataset directory containing files like:
+See [COMMANDS.md](COMMANDS.md) for copy-paste commands.
 
-- `Data_Entry_2017.csv`
-- `BBox_List_2017.csv`
-- `train_val_list.txt`
-- `test_list.txt`
-- image files under `images_*/images/*.png`
-
-## Data Split Strategy
-
-This project does **not** use a naive random 70/15/15 image split.
-
-The current split logic is:
-
-1. Use the official `train_val_list.txt` and `test_list.txt` files to define the train/validation pool and the held-out test set.
-2. Split the official `train_val` pool into train and validation at the **patient level** using `split_seed`.
-3. Keep all images from the same patient in the same split.
-4. Remove `No Finding` when constructing multilabel targets.
-
-This gives you:
-
-- a fixed held-out test set from the official dataset split
-- a patient-level validation split that reduces leakage
-- a stable evaluation setup for comparing experiments across seeds and model variants
-
-## Config and Naming Conventions
-
-### Baseline configs
-
-Keep one accepted baseline YAML per profile in `experiments/`, for example:
-
-- `experiments/densenet121_v1.yaml`
-- `experiments/resnet50_v1.yaml`
-- `experiments/convnext_tiny_v1.yaml`
-
-These baseline filenames are **seed-agnostic**. They still keep `train_seed` and `split_seed` as defaults so the config can run directly.
-
-### Grouped output layout
-
-The canonical artifact layout is:
+## Source layout
 
 ```text
-outputs/runs/<run_group>/seed<train_seed>/
+src/
+  config.py        dataset path and loader settings (.env)
+  data.py          metadata, multi-hot targets, patient-level split, pos_weight
+  datasets.py      torch Dataset
+  transforms.py    train/eval transforms from the config
+  models/factory.py  backbones, head replacement, optional domain-pretrained weights
+  metrics.py       AUROC, AUPRC, clinical score, threshold tuning
+  train.py         one run
+  study.py         studies (Optuna)
+  report.py        reports for a run or a study
+  ensemble.py      validation-selected ensembles of finished runs
+  utils.py         YAML/JSON helpers, dotted-key overrides
+experiments/       one YAML per model profile (tracked)
+studies/           one YAML per study (tracked)
+outputs/           everything generated (ignored by git)
 ```
 
-Examples:
+## Data split
 
-- `outputs/runs/convnext_tiny_v1/seed42/`
-- `outputs/runs/convnext_tiny_v1/seed44/`
-- `outputs/runs/resnet50_v2/seed46/`
+1. The official `test_list.txt` is the held-out test set.
+2. The official `train_val_list.txt` pool is split into train/validation **by patient**
+   (15% of patients to validation) using `split_seed`, so no patient appears in both.
+3. `No Finding` is not a target; an image may have zero, one or several findings.
 
-Use the **run group** as the profile name and the **seed directory** as the replicate identifier.
+Keep `split_seed` fixed across experiments you want to compare: every run is then
+scored on the same validation images.
 
-### Promotion workflow
-
-Use this pattern when evolving configs:
-
-1. Start from an accepted baseline profile.
-2. Make one controlled change at a time.
-3. Run a seed sweep for the changed profile.
-4. Compare seed means and standard deviations.
-5. Promote stable improvements into the next accepted version.
-
-Good run-group names look like:
-
-- `convnext_tiny_v1`
-- `convnext_tiny_v1_strongaug`
-- `convnext_tiny_v2`
-
-## Single-Run Workflow
-
-Train one config directly:
-
-```bash
-python src/train.py --config experiments/convnext_tiny_v1.yaml --overwrite
-```
-
-Resume an unfinished run:
-
-```bash
-python src/train.py --config experiments/convnext_tiny_v1.yaml --resume
-```
-
-Notes:
-
-- direct single-run execution uses the config's current `train_seed`
-- for the example above, artifacts land in `outputs/runs/convnext_tiny_v1/seed42/`
-- `--resume` only works for unfinished runs with a valid resume checkpoint
-- completed runs keep `checkpoints/best.pt`; unfinished resumable runs may temporarily contain `checkpoints/last.pt`
-
-## Manual Post-Processing for One Completed Run
-
-### Threshold tuning
-
-```bash
-python src/tune_thresholds.py --run-dir outputs/runs/convnext_tiny_v1/seed42
-```
-
-Optional grid settings:
-
-```bash
-python src/tune_thresholds.py \
-  --run-dir outputs/runs/convnext_tiny_v1/seed42 \
-  --grid-min 0.01 \
-  --grid-max 0.99 \
-  --grid-size 99 \
-  --fallback-threshold 0.5
-```
-
-What threshold tuning does:
-
-- loads the best validation predictions and test predictions
-- tunes one threshold per class on the validation split
-- uses `F1` as the tuning objective
-- compares default `0.5` thresholds against tuned thresholds
-- writes threshold artifacts back into the run directory
-- updates `run_summary.json` with threshold metrics
-
-Important:
-
-- threshold tuning changes **thresholded** metrics only
-- threshold tuning does **not** change AUROC or AUPRC
-
-### Plot generation
-
-```bash
-python src/plot.py --run-dir outputs/runs/convnext_tiny_v1/seed42 --top-k-pr-classes 5
-```
-
-You can also choose explicit classes for validation PR curves:
-
-```bash
-python src/plot.py \
-  --run-dir outputs/runs/convnext_tiny_v1/seed42 \
-  --pr-classes Atelectasis Cardiomegaly Effusion
-```
-
-Plots include:
-
-- training history
-- per-class validation AUPRC bar chart
-- per-class test AUPRC bar chart
-- prevalence vs AUPRC scatter plot
-- selected validation precision-recall curves
-- threshold comparison plots when threshold artifacts exist
-
-## Canonical Multi-Run Workflow: `study_runner.py`
-
-The canonical orchestration entrypoint is `src/study_runner.py`.
-
-### Run one or more studies
-
-Run one study:
-
-```bash
-python study_runner.py --study convnext_tiny_v1_seed_sweep.yaml
-```
-
-Run several studies in sequence:
-
-```bash
-python study_runner.py --study 
-  convnext_tiny_v1_seed_sweep.yaml 
-  resnet50_v1_seed_sweep.yaml 
-  densenet121_v1_seed_sweep.yaml
-```
-
-- `study_runner.py` accepts one or more study YAML paths after `--study`.
-- For a single path, behavior is unchanged.
-- For multiple paths, studies run sequentially and each still writes its own generated configs and summaries under its own `study_name`.
-
-### Example study
+## Config reference (`experiments/*.yaml`)
 
 ```yaml
-study_name: convnext_tiny_v1_seed_sweep
-base_config: experiments/convnext_tiny_v1.yaml
-
-execution:
-  train_mode: overwrite
-  run_threshold_tuning: true
-  run_plots: true
-  continue_on_error: true
-  default_train_seeds: [42]
-  split_seed: 0
-
-ranking:
-  primary_metric: val_macro_auprc
-  tiebreakers:
-    - val_macro_auroc
-  guardrails: {}
-
-shared_overrides: {}
-
-runs:
-  - train_seeds: [42, 44, 46]
-    overrides: {}
+model_name: convnext_tiny        # convnext_tiny | convnext_small | efficientnet_v2_s | densenet121 | resnet50 | vit_b_16
+pretrained: true                 # ImageNet weights (SWAG weights for vit_b_16, which needs image_size: 384)
+selection_metric: clinical_score # clinical_score | macro_auprc | macro_auroc | loss
+split_seed: 0
+image_size: 320                  # transforms resize to this unless augmentation.*.resize is set
+batch_size: 32
+num_epochs: 12
+warmup_epochs: 1                 # linear warmup, then cosine decay to 0 at num_epochs (stepped per batch)
+scheduler: cosine                # cosine | none
+patience: null                   # null: train every epoch; an int stops early. The best epoch is kept either way
+optimizer:                       # AdamW with separate backbone / head learning rates
+  backbone_lr: 7.95e-05
+  head_lr: 1.23e-03
+  weight_decay: 0.05
+  layer_decay: 0.75              # ViT only: each block below the top gets 0.75x the LR of the one above
+loss: bce                        # bce | weighted_bce (pos_weight-balanced; inflates probabilities)
+ema_decay: 0.999                 # evaluate, select and save an EMA of the weights; omit to disable
+drop_path: 0.2                   # stochastic depth; ConvNeXt and EfficientNet only
+tta_hflip: true                  # evaluation averages the logits of each image and its mirror
+augmentation:
+  train:
+    random_resized_crop_scale: [0.75, 1.0]   # crop 75-100% of the image, then resize
+    horizontal_flip: true
+    rotation_deg: 15
+    brightness: 0.15
+    contrast: 0.15
+clinical_score:                  # optional; these are the defaults
+  sensitivity_range: [0.90, 0.99]
+  prevalence_weight_power: 0.5
+  ranking_weight: 0.6
+use_amp: true                    # plus amp_dtype (float16 | bfloat16), channels_last, compile_model, deterministic
 ```
 
-### What a study run does
+`experiments/convnext_tiny_v8.yaml` is the current best recipe. `compile_model: true`
+needs `triton-windows` on Windows (about 30% faster).
 
-For each generated run, the study runner will:
+The training seed is not part of the config: it comes from `--seed` or from the
+study's `seeds`.
 
-1. load the baseline config
-2. apply shared overrides and per-run overrides
-3. inject `train_seed`, `split_seed`, `run_group`, `seed_dir`, and `run_name`
-4. write generated configs under `experiments/generated/<study_name>/`
-5. train each generated run
-6. optionally tune thresholds
-7. optionally generate plots
-8. optionally summarize each run group when more than one seed finished
-9. write study-level outputs under `outputs/experiment_summaries/<study_name>/`
+## Study reference (`studies/*.yaml`)
 
-### Study train modes
+```yaml
+base_config: experiments/convnext_tiny_v7.yaml
+overrides:                 # dotted keys applied to every trial
+  image_size: 448
+  batch_size: 16
+seeds: [42, 44]            # every trial trains all of these; objective = mean
+n_trials: 20               # total finished trials (not per invocation)
+sampler: tpe               # tpe | random | grid
+pruner:                    # median pruner on the first seed; omit to disable
+  n_startup_trials: 5
+  n_warmup_steps: 7
+search_space:
+  optimizer.head_lr: {low: 6.0e-4, high: 2.0e-3, log: true}     # float
+  augmentation.train.rotation_deg: {low: 0, high: 20}             # int (both bounds integers)
+  augmentation.train.horizontal_flip: {choices: [true, false]}    # categorical
+variants:                  # optional named override sets, compared like a categorical
+  320px: {}
+  448px: {image_size: 448, batch_size: 16}
+```
 
-`execution.train_mode` supports three behaviors:
+- With no `search_space` and no `variants`, a study is a single trial: a seed sweep.
+- With `sampler: grid`, every combination of `variants` and `choices` runs once;
+  `n_trials` defaults to the grid size.
+- The study name is the YAML file name. Re-running continues the study; failed or
+  interrupted trials are retried with the same parameters and resume from their
+  last epoch.
 
-- `overwrite`: retrain every run from scratch
-- `resume`: skip completed runs, resume only runs with valid resume state, and error if a run never started
-- `auto`: skip completed runs, resume resumable runs, and start fresh if no resumable state exists
+## Selection metric: the clinical score
 
-`auto` is usually the safest mode for long-running sweeps that may be interrupted.
+For class *c* with validation prevalence *p<sub>c</sub>* and average precision
+*AP<sub>c</sub>*:
 
-## Output Layout
+- normalised AP: (AP<sub>c</sub> − p<sub>c</sub>) / (1 − p<sub>c</sub>), so the
+  prevalence baseline is 0 and a perfect ranking is 1;
+- high-sensitivity specificity: specificity averaged over sensitivity targets
+  0.90, 0.91, …, 0.99 (each at the highest threshold meeting the target);
+- weights: w<sub>c</sub> ∝ p<sub>c</sub><sup>0.5</sup>, normalised to sum to 1.
 
-A typical study writes artifacts like this:
+clinical score = 0.6 · Σ w<sub>c</sub> · normalised AP<sub>c</sub> + 0.4 · Σ w<sub>c</sub> · high-sensitivity specificity<sub>c</sub>
+
+The first term rewards ranking the most likely cases at the top of the list (useful
+for confirming a finding). The second rewards keeping specificity while missing
+almost no positives (useful for ruling a finding out). Specificity is averaged over a
+sensitivity range instead of read at a single 95% point because one point on the ROC
+curve depends on a handful of lowest-scored (and often mislabelled) positives; on
+past runs the averaged version tracked the config more than the seed (seed ICC 0.28
+vs 0.21) and predicted test results slightly better.
+
+On 98 past runs, the clinical score predicted test performance better than macro
+AUPRC did (Spearman 0.81 vs 0.59 to test clinical score; 0.82 vs 0.59 to test macro
+AUROC).
+
+### Reading results honestly
+
+Between-config differences at this stage are about the size of seed-to-seed noise
+(clinical score SD ≈ 0.006 across seeds). Treat gaps smaller than about two seed SDs
+as ties, use at least two seeds per trial for anything you intend to act on, and
+use the test split only to audit a promoted config, never to choose one.
+
+## Outputs
 
 ```text
-experiments/
-  generated/
-    convnext_tiny_v1_seed_sweep/
-      study_generated.json
-      convnext_tiny_v1_seed42.yaml
-      convnext_tiny_v1_seed44.yaml
-      convnext_tiny_v1_seed46.yaml
+outputs/ensembles/<name>/
+  predictions.npz      averaged logits, in the same format as a run
+  summary.json         members and weights, greedy steps, greedy-vs-balanced comparison
 
-outputs/
-  runs/
-    convnext_tiny_v1/
-      seed42/
-        config.yaml
-        class_order.json
-        history.csv
-        run_summary.json
-        best_val_predictions.csv
-        test_predictions.csv
-        per_class_ranking_metrics.csv
-        thresholds_val.json
-        per_class_threshold_metrics.csv
-        thresholded_predictions_tuned.csv
-        checkpoints/
-          best.pt
-        plots/
-          history.png
-          per_class_auprc_val.png
-          per_class_auprc_test.png
-          prevalence_vs_auprc.png
-          pr_curves_selected_classes_val.png
-          threshold_macro_comparison_val.png
-          threshold_macro_comparison_test.png
-          threshold_delta_heatmap_val.png
-          threshold_delta_heatmap_test.png
-      seed44/
-      seed46/
-      seed_summary.csv
-      seed_summary.json
+outputs/experiments/<config>/seed<N>/       # or outputs/studies/<study>/trial_<k>/seed<N>/
+  config.yaml          exact config used (including seed)
+  history.csv          per-epoch losses, AUROC, AUPRC, clinical score, learning rates
+  checkpoints/best.pt  weights of the best epoch (last.pt exists only while unfinished)
+  predictions.npz      float32 logits, targets and image ids for val and test at the best epoch
+  summary.json         val/test macro metrics, best epoch, stop reason, git commit
+  report/              written by report.py: per_class.csv, thresholds.csv, report.json, *.png
 
-  experiment_summaries/
-    convnext_tiny_v1_seed_sweep/
-      run_results.csv
-      group_results.csv
-      leaderboard.json
+outputs/studies/<study>/
+  study.yaml           copy of the study definition
+  optuna.db            Optuna storage (open with optuna-dashboard)
+  trials.csv           ranked trials: mean and seed SD of val metrics, mean test metrics, params
+  best_config.yaml     full config of the best trial, ready to copy into experiments/
+  report/              written by report.py: leaderboard and per-class heatmap
 ```
 
-## Key Artifacts and What They Are For
+Runs created by the previous pipeline (in `outputs/runs/`) can still be reported
+with `report.py`; their prediction CSVs were saved in fp16 precision, so their AP
+values are slightly understated.
 
-### Per-run files
+## Ensembles
 
-- `run_summary.json`
-  Canonical per-run summary. This is the first file to check for validation/test macro ranking metrics and tuned threshold metrics.
+```bash
+python src/ensemble.py final "outputs/studies/convnext_tiny_v8_448/trial_*/seed*" "outputs/studies/vit_b_16_384/trial_*/seed*"
+```
 
-- `history.csv`
-  Per-epoch train/validation history.
+Every run that matched the patterns and finished becomes a candidate. All candidates must share
+`split_seed`, so that they predict the same images.
+Two weightings are built and compared on validation:
 
-- `best_val_predictions.csv`
-  Validation predictions from the best checkpoint.
+- **greedy**: forward selection with replacement on `--metric` (default clinical score),
+  up to `--max-members` picks. A strong run can be picked more than once.
+- **balanced**: each architecture (`model_name`) gets equal weight, split equally across
+  its runs, so one architecture with many runs cannot dominate.
 
-- `test_predictions.csv`
-  Test predictions from the best checkpoint.
+A patient-level bootstrap of the validation difference decides. Greedy is used only if
+its 95% interval is entirely above zero; otherwise balanced is used, because greedy weights
+partly fit validation noise. `--weights greedy|balanced` overrides the choice.
+Logits are averaged (`--combine logit`, the default). Probabilities from `weighted_bce` runs
+are inflated, so averaging probabilities would weight models by calibration rather than quality.
+Test metrics are printed for both weightings, but they are never used to choose.
 
-- `per_class_ranking_metrics.csv`
-  Per-class AUROC and AUPRC for validation and test.
+## Thresholds
 
-- `thresholds_val.json`
-  The selected threshold for each class plus tuning metadata.
+`report.py` chooses per-class thresholds **on validation** and applies them unchanged
+to test, under three schemes: `default_0.5`, `f1` (F1-optimal) and
+`target_sensitivity` (highest threshold that keeps the requested sensitivity,
+`--target-sensitivity`, default 0.95). Thresholds change precision, recall, F1 and
+specificity only; AUROC, AUPRC and the clinical score are threshold-free.
 
-- `per_class_threshold_metrics.csv`
-  Per-class default-vs-tuned precision, recall, F1, and specificity for validation and test.
+## CXR-domain pretraining
 
-- `thresholded_predictions_tuned.csv`
-  Hard thresholded predictions using the tuned thresholds.
+To start from a chest-X-ray-pretrained checkpoint of the same torchvision
+architecture, set `pretrained: false` and:
 
-### Run-group files
+```yaml
+domain_pretrained:
+  path: weights/convnext_tiny_cxr_pretrained.pt
+  source: "publisher, release version, and license reference"
+  sha256: "verified checkpoint SHA-256"
+  backbone_only: true
+  min_backbone_match_ratio: 0.95
+```
 
-- `seed_summary.csv`
-  Tabular summary of individual seeds plus mean/std rows.
-
-- `seed_summary.json`
-  Machine-readable seed-group summary.
-
-### Study-level files
-
-- `run_results.csv`
-  One row per generated run in the study.
-
-- `group_results.csv`
-  One row per run group with mean/std metrics and ranking fields.
-
-- `leaderboard.json`
-  Machine-readable ranked group summary for the study.
-
-## How To Compare Experiments
-
-Use this order when deciding whether one experiment is better than another.
-
-1. **Validation macro AUPRC**
-   This is the primary model-selection metric.
-
-2. **Validation macro AUROC**
-   Use this as a tiebreaker, not the main winner metric.
-
-3. **Test macro AUPRC and test macro AUROC**
-   Use these to confirm the improvement generalizes.
-
-4. **Tuned test macro F1, recall, and specificity**
-   Use these to judge the final thresholded operating point after threshold tuning.
-
-5. **Per-class ranking and thresholded metrics**
-   Check these before promoting a new profile, because macro averages can hide regressions in important classes.
-
-Important reminder:
-
-- threshold tuning can improve F1, recall, specificity, and other thresholded metrics
-- threshold tuning does **not** improve AUROC or AUPRC, because those are threshold-free ranking metrics
-
-## What To Optimize
-
-This is a hard, highly imbalanced multilabel medical-imaging task. Raw scores will look lower than familiar single-label accuracy metrics, so the goal is not to chase one big headline number.
-
-- Primary selection metric: validation macro AUPRC.
-- Secondary check: validation macro AUROC.
-- Real progress check: per-class AUPRC and AUROC, especially for clinically important findings.
-- Promotion rule: trust changes that improve the primary metric across multiple seeds and do not materially regress important classes.
-- Test set role: audit promoted configs only, not candidate selection.
-- Threshold tuning role: choose the final operating point after model selection; it changes F1, recall, and specificity, not AUROC or AUPRC.
-
-## Recommended End-to-End Workflow
-
-1. Start from an accepted baseline config in `experiments/`.
-2. Create or update a study YAML in `studies/`.
-3. Run the study with `src/study_runner.py`.
-4. Inspect `outputs/experiment_summaries/<study_name>/group_results.csv`.
-5. Inspect the winning run group's `seed_summary.csv` and individual seed folders.
-6. Check `run_summary.json`, `per_class_ranking_metrics.csv`, and `per_class_threshold_metrics.csv` before declaring the profile better.
-7. Promote stable improvements into the next versioned baseline.
-
-## Current Baseline Examples
-
-- `experiments/densenet121_v1.yaml`
-- `experiments/resnet50_v1.yaml`
-- `experiments/convnext_tiny_v1.yaml`
-
-## Notes
-
-- `notebooks/00_data_exploration.ipynb` is for exploratory analysis, not the core training pipeline.
-- Generated configs under `experiments/generated/` are build artifacts. Edit baseline configs and study YAMLs instead.
-- The current `study_runner.py` CLI accepts one `--study` path per invocation.
-- This README intentionally documents the study-based workflow as the primary orchestration path.
-
-## Near-Term Roadmap
-
-- batch manifest support in `study_runner.py`
-- stronger ranking guardrails in study comparison
-- calibration and ensemble stages after stable single-model baselines
-
-## Long-Term Roadmap
-
-- include BioViL-T in ensemble
-- 
+The loader accepts `model_state_dict` or a raw state dict, strips `module.`/`model.`
+prefixes, skips the classifier head, and fails unless enough backbone tensors match
+by name and shape. The load report is stored in `summary.json`.

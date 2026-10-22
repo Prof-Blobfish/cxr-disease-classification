@@ -1,0 +1,36 @@
+# ViT-B/16 with SWAG weights (pretrained on ~3.6B weakly labelled images), v8 recipe plus
+# layer-wise LR decay, for ensemble diversity. LRs are standard fine-tuning values, not tuned.
+model_name: vit_b_16
+pretrained: true
+selection_metric: clinical_score
+split_seed: 0
+deterministic: false
+use_amp: true
+amp_dtype: bfloat16       # more stable than fp16 for transformers
+channels_last: true
+compile_model: true
+image_size: 384            # fixed by the SWAG weights
+batch_size: 32
+num_epochs: 10
+warmup_epochs: 1
+patience: null            # train the full schedule; the best epoch is still kept
+optimizer:
+  backbone_lr: 5.0e-05     # top block; lower blocks get layer_decay ** depth
+  layer_decay: 0.75
+  head_lr: 1.0e-03
+  weight_decay: 0.05
+scheduler: cosine
+ema_decay: 0.999
+loss: bce                 # weighted_bce = pos_weight-balanced BCE (v7)
+tta_hflip: true
+augmentation:
+  train:
+    random_resized_crop_scale: [0.75, 1.0]
+    horizontal_flip: true
+    rotation_deg: 15
+    brightness: 0.15
+    contrast: 0.15
+clinical_score:
+  sensitivity_range: [0.90, 0.99]
+  prevalence_weight_power: 0.5
+  ranking_weight: 0.6

@@ -1,0 +1,30 @@
+model_name: convnext_tiny
+pretrained: true
+selection_metric: clinical_score
+split_seed: 0
+deterministic: false
+use_amp: true
+amp_dtype: float16
+channels_last: true
+compile_model: false
+compile_mode: reduce-overhead
+image_size: 320
+batch_size: 32
+num_epochs: 30
+patience: 7
+optimizer:
+  backbone_lr: 7.950044534168084e-05
+  head_lr: 0.0012343290497012428
+  weight_decay: 2.309930033041549e-06
+augmentation:
+  train:
+    horizontal_flip: true
+    rotation_deg: 15
+    brightness: 0.05
+    contrast: 0.05
+    translate: 0.01
+scheduler: cosine
+clinical_score:
+  sensitivity_range: [0.90, 0.99]
+  prevalence_weight_power: 0.5
+  ranking_weight: 0.6

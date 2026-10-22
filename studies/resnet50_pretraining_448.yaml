@@ -1,0 +1,14 @@
+# Does chest-X-ray pretraining (BioViL-T, MIMIC-CXR) beat ImageNet for ResNet-50 at 448px?
+base_config: experiments/resnet50_v2.yaml
+seeds: [42]
+sampler: grid
+variants:
+  biovil_t:
+    pretrained: false
+    normalization: {mean: [0.0, 0.0, 0.0], std: [1.0, 1.0, 1.0]}
+    domain_pretrained:
+      path: weights/biovil_t_resnet50.pt
+      source: "microsoft/BiomedVLP-BioViL-T, biovil_t_image_model_proj_size_128.pt (MIMIC-CXR)"
+      sha256: "3d8f45efdb74f3773fd4f38a0c0e424b521f8a65a8556b3fb8870d64038d9d32"
+      backbone_only: true
+  imagenet: {}

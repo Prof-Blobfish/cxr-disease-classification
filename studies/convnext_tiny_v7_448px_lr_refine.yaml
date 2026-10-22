@@ -1,0 +1,13 @@
+# Learning-rate refinement at 448px. Two seeds per trial so rankings are not seed luck.
+base_config: experiments/convnext_tiny_v7.yaml
+overrides:
+  image_size: 448
+  batch_size: 16
+seeds: [42, 44]
+n_trials: 20
+pruner:            # median pruner on the first seed; omit to disable
+  n_startup_trials: 5
+  n_warmup_steps: 7
+search_space:
+  optimizer.backbone_lr: {low: 3.0e-5, high: 1.2e-4, log: true}
+  optimizer.head_lr: {low: 6.0e-4, high: 2.0e-3, log: true}

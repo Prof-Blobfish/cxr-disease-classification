@@ -1,0 +1,14 @@
+# EfficientNetV2-S overfits under the 12-epoch schedule: validation peaks at epoch 5 while the
+# LR is still high, then falls as train loss keeps dropping. Shorter schedules let the LR
+# decay while the model is near its peak; lower LR and more stochastic depth slow overfitting.
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  image_size: 384
+seeds: [42]
+sampler: grid
+variants:
+  e6: {num_epochs: 6}
+  e6_lr5e-5: {num_epochs: 6, optimizer.backbone_lr: 5.0e-05}
+  e8_lr5e-5: {num_epochs: 8, optimizer.backbone_lr: 5.0e-05}
+  e6_dp3: {num_epochs: 6, drop_path: 0.3}
+  e6_448: {num_epochs: 6, image_size: 448}

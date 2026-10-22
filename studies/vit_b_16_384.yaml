@@ -1,0 +1,3 @@
+# ViT-B/16 (SWAG weights) at 384px, for ensemble diversity.
+base_config: experiments/vit_b_16_v1.yaml
+seeds: [42, 44]

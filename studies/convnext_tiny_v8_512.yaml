@@ -1,0 +1,7 @@
+# The v8 recipe at 512px (small findings: nodules, masses, small pneumothoraces), for the final ensemble.
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  image_size: 512
+  batch_size: 16
+  num_epochs: 9
+seeds: [42, 44]

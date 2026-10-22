@@ -61,12 +61,24 @@ def build_train_transform(cfg: dict[str, Any]) -> ImageTransform:
     mean = tuple(normalization_cfg.get("mean", DEFAULT_MEAN))
     std = tuple(normalization_cfg.get("std", DEFAULT_STD))
 
-    steps: list[Callable[..., Any]] = [
-        transforms.Resize(
-            (resize, resize),
-            interpolation=InterpolationMode.BILINEAR,
-        )
-    ]
+    crop_scale = train_cfg.get("random_resized_crop_scale")
+    if crop_scale is not None:
+        # Zoom in on a random 70-100% (say) of the image, then resize; mild aspect jitter.
+        steps: list[Callable[..., Any]] = [
+            transforms.RandomResizedCrop(
+                resize,
+                scale=_as_pair(crop_scale, (1.0, 1.0)),
+                ratio=(0.9, 1.1),
+                interpolation=InterpolationMode.BILINEAR,
+            )
+        ]
+    else:
+        steps = [
+            transforms.Resize(
+                (resize, resize),
+                interpolation=InterpolationMode.BILINEAR,
+            )
+        ]
 
     if crop_size is not None:
         steps.append(transforms.RandomCrop(int(crop_size)))

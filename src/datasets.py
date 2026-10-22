@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pandas as pd
@@ -11,6 +12,18 @@ from torch.utils.data import Dataset
 from torchvision.transforms import functional as TF
 
 from data import DataBundle
+
+
+def load_image(path: str, attempts: int = 5) -> Image.Image:
+    # Windows can briefly lock a file (antivirus, indexer); one denied read shouldn't kill a run.
+    for attempt in range(attempts):
+        try:
+            with Image.open(path) as image_file:
+                return image_file.convert("RGB")
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5 * 2 ** attempt)
 
 
 class CXRDataset(Dataset):
@@ -37,8 +50,7 @@ class CXRDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.df.iloc[idx]
 
-        with Image.open(row["image_path"]) as image_file:
-            image = image_file.convert("RGB")
+        image = load_image(row["image_path"])
         if self.transform is not None:
             image = self.transform(image)
         else:

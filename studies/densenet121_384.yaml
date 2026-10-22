@@ -1,0 +1,5 @@
+# DenseNet-121 with the v8 recipe at 384px, for ensemble diversity.
+base_config: experiments/densenet121_v2.yaml
+overrides:
+  image_size: 384
+seeds: [42, 44]

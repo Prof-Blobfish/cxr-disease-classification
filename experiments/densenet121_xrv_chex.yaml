@@ -1,0 +1,45 @@
+# DenseNet-121 initialised from TorchXRayVision's CheXpert (Stanford) model instead of ImageNet.
+# Leakage check: that model was trained on CheXpert (Stanford) only (weights file
+# chex-densenet121-d121-tw-lr001-rot45-tr15-sc15-seed0-best.pt), no NIH images.
+# Converted to torchvision keys from the release file; inputs scaled to [-1024, 1024] as it expects.
+model_name: densenet121
+pretrained: false
+selection_metric: clinical_score
+split_seed: 0
+deterministic: false
+use_amp: true
+amp_dtype: float16
+channels_last: true
+compile_model: true
+image_size: 320
+batch_size: 32
+num_epochs: 12
+warmup_epochs: 1
+patience: null            # train the full schedule; the best epoch is still kept
+optimizer:
+  backbone_lr: 1.0e-04
+  head_lr: 1.0e-03
+  weight_decay: 0.01
+scheduler: cosine
+ema_decay: 0.999
+loss: bce                 # weighted_bce = pos_weight-balanced BCE (v7)
+tta_hflip: true
+augmentation:
+  train:
+    random_resized_crop_scale: [0.75, 1.0]
+    horizontal_flip: true
+    rotation_deg: 15
+    brightness: 0.15
+    contrast: 0.15
+clinical_score:
+  sensitivity_range: [0.90, 0.99]
+  prevalence_weight_power: 0.5
+  ranking_weight: 0.6
+normalization:            # TorchXRayVision input range: (2 * x - 1) * 1024
+  mean: [0.5, 0.5, 0.5]
+  std: [0.00048828125, 0.00048828125, 0.00048828125]
+domain_pretrained:
+  path: weights/xrv_densenet121_chex.pt
+  source: "TorchXRayVision v1 release, densenet121-res224-chex (CheXpert (Stanford) only)"
+  sha256: "36abe8f298e8322fd6d02061e4b829f80b94e1df99f226608e9a187f2c0e9e14"
+  backbone_only: true

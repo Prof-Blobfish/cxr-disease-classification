@@ -1,0 +1,9 @@
+# Variant comparison: every named variant runs on every seed (grid over variants).
+base_config: experiments/convnext_tiny_v7.yaml
+seeds: [42, 44, 46]
+sampler: grid
+variants:
+  320px: {}
+  448px:
+    image_size: 448
+    batch_size: 16

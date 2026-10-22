@@ -32,8 +32,8 @@ def prepare_data(
     dataset_root = _resolve_root(root)
 
     metadata_df = _load_metadata(dataset_root)
-    iamge_lookup = _build_image_lookup(dataset_root)
-    metadata_df = _attach_image_paths(metadata_df, iamge_lookup)
+    image_lookup = _build_image_lookup(dataset_root)
+    metadata_df = _attach_image_paths(metadata_df, image_lookup)
 
     metadata_df, class_names, target_columns = _encode_targets(metadata_df)
 
