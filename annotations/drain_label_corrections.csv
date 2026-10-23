@@ -1,0 +1,7 @@
+image_id,old,new,reason,by,at_utc
+00003528_038.png,drain,other_equipment,"tracheostomy tube, feeding tube and ECG leads only; nothing enters the lateral chest wall","Claude (visual review, not a radiologist)",2026-10-23T06:18:41+00:00
+00012156_001.png,drain,other_equipment,no tubes at all; only small surgical clips over the right upper chest,"Claude (visual review, not a radiologist)",2026-10-23T06:18:41+00:00
+00016786_010.png,drain,other_equipment,"ECG electrodes and wires, breathing and feeding tubes only","Claude (visual review, not a radiologist)",2026-10-23T06:18:41+00:00
+00014663_040.png,other_equipment,drain,"pigtail catheter coiled at the right apex, typical of a pneumothorax drain","Claude (visual review, not a radiologist)",2026-10-23T06:18:41+00:00
+00014116_001.png,unsure,other_equipment,a single external wire crossing the left chest; no drain,"Claude (visual review, not a radiologist)",2026-10-23T06:18:41+00:00
+00010677_004.png,unsure,drain,tube entering the left lateral chest wall and running medially in the lower chest,"Claude (visual review, not a radiologist)",2026-10-23T06:18:41+00:00

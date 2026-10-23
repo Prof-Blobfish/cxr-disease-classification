@@ -270,10 +270,12 @@ python src/expert_eval.py outputs/ensembles/<name>
 It prints AUROC against the expert labels and against the NIH labels on the same images, and the
 model's sensitivity at each individual radiologist's specificity. Results go to `expert_eval.json`.
 
-Pneumothorax models are known to learn the chest drain used to treat it. `python src/label_drains.py`
-shows the 195 expert-positive pneumothorax images and 200 negatives, shuffled and unlabelled, for
-drain/no-drain labelling (saved to `annotations/drain_labels.csv`). `expert_eval.py` then also reports
-pneumothorax AUROC with and without a drain.
+Pneumothorax models are known to learn the chest drain used to treat it. `src/label_drains.py`
+shows the 195 expert-positive pneumothorax images and 200 negatives, shuffled and unlabelled, in two
+passes: `--pass equipment` (any tube, line or device vs none) and then `--pass drain` on the images
+with equipment (chest drain vs other equipment). Labels go to `annotations/`. `expert_eval.py` then
+also reports pneumothorax AUROC with and without each cue, and the stress test of positives lacking
+the cue against negatives that have it.
 
 ## Thresholds
 

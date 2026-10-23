@@ -135,28 +135,53 @@ def evaluate(run_dir: Path, folder: Path) -> dict:
         reader_column = "Nodule/mass" if column == "Nodule or mass" else column
         result["readers"][column] = reader_comparison(readers, expert, reader_column, score)
 
-    # ---- pneumothorax by chest drain, once annotations/drain_labels.csv exists (src/label_drains.py)
-    drains_path = PROJECT_ROOT / "annotations" / "drain_labels.csv"
-    if drains_path.is_file():
-        drains = pd.read_csv(drains_path).set_index("image_id")["drain"]
-        drains = drains[drains.isin(["drain", "no_drain"])]
-        expert = yes(labels["Pneumothorax"]).reindex(drains.index)
-        score = probs.loc[drains.index, "Pneumothorax"]
-        groups = {(p, d): drains.index[(expert == p) & (drains == d)] for p in (1, 0) for d in ("drain", "no_drain")}
-        negatives = groups[(0, "drain")].append(groups[(0, "no_drain")])
+    # ---- pneumothorax shortcuts, from annotations/{equipment,drain}_labels.csv (src/label_drains.py)
+    devices = device_status()
+    if devices is not None:
+        expert = yes(labels["Pneumothorax"]).reindex(devices.index)
+        score = probs.loc[devices.index, "Pneumothorax"]
 
-        def compare(positive_ids, negative_ids) -> float:
-            ids = positive_ids.append(negative_ids)
-            return auc(np.r_[np.ones(len(positive_ids)), np.zeros(len(negative_ids))], score.loc[ids].to_numpy())
+        def ids(positive: int, statuses: tuple[str, ...]) -> pd.Index:
+            return devices.index[(expert == positive) & devices.isin(statuses)]
 
-        result["pneumothorax_by_drain"] = {
-            "counts": {f"{'pneumothorax' if p else 'no pneumothorax'}, {d}": len(ids) for (p, d), ids in groups.items()},
-            "auroc_positives_with_drain": compare(groups[(1, "drain")], negatives),
-            "auroc_positives_without_drain": compare(groups[(1, "no_drain")], negatives),
-            # The shortcut stress test (Rueckel et al. 2020): untreated pneumothorax vs drained lungs without one.
-            "auroc_without_drain_vs_negatives_with_drain": compare(groups[(1, "no_drain")], groups[(0, "drain")]),
+        def compare(positive_ids: pd.Index, negative_ids: pd.Index) -> float:
+            both = positive_ids.append(negative_ids)
+            return auc(np.r_[np.ones(len(positive_ids)), np.zeros(len(negative_ids))], score.loc[both].to_numpy())
+
+        statuses = sorted(set(devices))
+        equipped = tuple(status for status in statuses if status != "none")
+        everything = tuple(statuses)
+        shortcuts = {
+            "counts": {f"{'pneumothorax' if p else 'no pneumothorax'}, {s}": len(ids(p, (s,))) for p in (1, 0) for s in statuses},
+            "auroc_with_equipment_vs_negatives": compare(ids(1, equipped), ids(0, everything)),
+            "auroc_without_equipment_vs_negatives": compare(ids(1, ("none",)), ids(0, everything)),
+            # Stress tests (Rueckel et al. 2020): positives lacking the cue vs negatives that have it.
+            "auroc_without_equipment_vs_negatives_with_equipment": compare(ids(1, ("none",)), ids(0, equipped)),
         }
+        if "drain" in statuses:
+            no_drain = tuple(status for status in statuses if status != "drain")
+            shortcuts |= {
+                "auroc_with_drain_vs_negatives": compare(ids(1, ("drain",)), ids(0, everything)),
+                "auroc_without_drain_vs_negatives": compare(ids(1, no_drain), ids(0, everything)),
+                "auroc_without_drain_vs_negatives_with_drain": compare(ids(1, no_drain), ids(0, ("drain",))),
+            }
+        result["pneumothorax_shortcuts"] = shortcuts
     return result
+
+
+def device_status() -> pd.Series | None:
+    """Per image: none / equipment / other_equipment / drain, from the labelling passes; unsure is dropped.
+    Before the drain pass, equipment images are just "equipment"; after it, drain or other_equipment."""
+    equipment_path = PROJECT_ROOT / "annotations" / "equipment_labels.csv"
+    if not equipment_path.is_file():
+        return None
+    equipment = pd.read_csv(equipment_path).set_index("image_id")["equipment"]
+    status = equipment.map({"no_equipment": "none", "any_equipment": "equipment"})
+    drain_path = PROJECT_ROOT / "annotations" / "drain_labels.csv"
+    if drain_path.is_file():
+        drain = pd.read_csv(drain_path).set_index("image_id")["drain"].reindex(status.index)
+        status = status.where(status != "equipment", drain.map({"drain": "drain", "other_equipment": "other_equipment"}))
+    return status.dropna()
 
 
 def print_result(result: dict) -> None:
@@ -173,13 +198,13 @@ def print_result(result: dict) -> None:
         frame = pd.DataFrame(rows)
         print(f"  {name:18}{len(frame):8d}{frame.reader_sensitivity.mean():12.3f}{frame.reader_specificity.mean():12.3f}"
               f"{frame.model_sensitivity_at_reader_specificity.mean():26.3f}{frame.model_specificity_at_reader_sensitivity.mean():26.3f}")
-    if "pneumothorax_by_drain" in result:
-        drain = result["pneumothorax_by_drain"]
-        print("\nPneumothorax by chest drain (expert labels, annotations/drain_labels.csv)")
-        print("  " + ", ".join(f"{name}: {count}" for name, count in drain["counts"].items()))
-        print(f"  AUROC, pneumothorax with drain vs negatives:      {drain['auroc_positives_with_drain']:.4f}")
-        print(f"  AUROC, pneumothorax without drain vs negatives:   {drain['auroc_positives_without_drain']:.4f}")
-        print(f"  AUROC, without drain vs negatives with a drain:   {drain['auroc_without_drain_vs_negatives_with_drain']:.4f}")
+    if "pneumothorax_shortcuts" in result:
+        shortcuts = result["pneumothorax_shortcuts"]
+        print("\nPneumothorax shortcuts (expert labels; annotations/equipment_labels.csv, drain_labels.csv)")
+        print("  " + ", ".join(f"{name}: {count}" for name, count in shortcuts["counts"].items()))
+        for key, value in shortcuts.items():
+            if key.startswith("auroc_"):
+                print(f"  {key.removeprefix('auroc_').replace('_', ' '):52}{value:.4f}")
 
 
 def main() -> None:
