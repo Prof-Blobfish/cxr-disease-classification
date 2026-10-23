@@ -134,6 +134,28 @@ def evaluate(run_dir: Path, folder: Path) -> dict:
         }
         reader_column = "Nodule/mass" if column == "Nodule or mass" else column
         result["readers"][column] = reader_comparison(readers, expert, reader_column, score)
+
+    # ---- pneumothorax by chest drain, once annotations/drain_labels.csv exists (src/label_drains.py)
+    drains_path = PROJECT_ROOT / "annotations" / "drain_labels.csv"
+    if drains_path.is_file():
+        drains = pd.read_csv(drains_path).set_index("image_id")["drain"]
+        drains = drains[drains.isin(["drain", "no_drain"])]
+        expert = yes(labels["Pneumothorax"]).reindex(drains.index)
+        score = probs.loc[drains.index, "Pneumothorax"]
+        groups = {(p, d): drains.index[(expert == p) & (drains == d)] for p in (1, 0) for d in ("drain", "no_drain")}
+        negatives = groups[(0, "drain")].append(groups[(0, "no_drain")])
+
+        def compare(positive_ids, negative_ids) -> float:
+            ids = positive_ids.append(negative_ids)
+            return auc(np.r_[np.ones(len(positive_ids)), np.zeros(len(negative_ids))], score.loc[ids].to_numpy())
+
+        result["pneumothorax_by_drain"] = {
+            "counts": {f"{'pneumothorax' if p else 'no pneumothorax'}, {d}": len(ids) for (p, d), ids in groups.items()},
+            "auroc_positives_with_drain": compare(groups[(1, "drain")], negatives),
+            "auroc_positives_without_drain": compare(groups[(1, "no_drain")], negatives),
+            # The shortcut stress test (Rueckel et al. 2020): untreated pneumothorax vs drained lungs without one.
+            "auroc_without_drain_vs_negatives_with_drain": compare(groups[(1, "no_drain")], groups[(0, "drain")]),
+        }
     return result
 
 
@@ -151,6 +173,13 @@ def print_result(result: dict) -> None:
         frame = pd.DataFrame(rows)
         print(f"  {name:18}{len(frame):8d}{frame.reader_sensitivity.mean():12.3f}{frame.reader_specificity.mean():12.3f}"
               f"{frame.model_sensitivity_at_reader_specificity.mean():26.3f}{frame.model_specificity_at_reader_sensitivity.mean():26.3f}")
+    if "pneumothorax_by_drain" in result:
+        drain = result["pneumothorax_by_drain"]
+        print("\nPneumothorax by chest drain (expert labels, annotations/drain_labels.csv)")
+        print("  " + ", ".join(f"{name}: {count}" for name, count in drain["counts"].items()))
+        print(f"  AUROC, pneumothorax with drain vs negatives:      {drain['auroc_positives_with_drain']:.4f}")
+        print(f"  AUROC, pneumothorax without drain vs negatives:   {drain['auroc_positives_without_drain']:.4f}")
+        print(f"  AUROC, without drain vs negatives with a drain:   {drain['auroc_without_drain_vs_negatives_with_drain']:.4f}")
 
 
 def main() -> None:

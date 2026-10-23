@@ -68,6 +68,8 @@ src/
   report.py        reports for a run or a study
   ensemble.py      validation-selected ensembles of finished runs
   retrain.py       retrain an ensemble's members on train + val
+  expert_eval.py   score runs against radiologist-adjudicated NIH test labels
+  label_drains.py  label chest drains on expert-labelled images (pneumothorax shortcut check)
   utils.py         YAML/JSON helpers, dotted-key overrides
 experiments/       one YAML per model profile (tracked)
 studies/           one YAML per study (tracked)
@@ -251,6 +253,27 @@ Each member keeps its config and LR schedule, trains on the 15% extra images, an
 epoch validation chose for it. The members' weights are reused unchanged. Output goes to
 `outputs/trainval/` and `outputs/ensembles/<name>_trainval/`. After retraining, only the test
 metrics are held out.
+
+## Expert labels
+
+NIH's labels were text-mined from reports, and radiologist audits found many are wrong. Google
+released radiologist-adjudicated labels for part of the official test set
+([request form](https://docs.cloud.google.com/healthcare-api/docs/resources/public-datasets/nih-chest)):
+810 PA images with all 14 findings plus Abnormal, and 1,962 images with pneumothorax, airspace
+opacity, nodule/mass and fracture. Put the `nih-cxr-14_labels_*.csv` files in a folder, add
+`EXPERT_LABELS_PATH=...` to `.env`, then:
+
+```bash
+python src/expert_eval.py outputs/ensembles/<name>
+```
+
+It prints AUROC against the expert labels and against the NIH labels on the same images, and the
+model's sensitivity at each individual radiologist's specificity. Results go to `expert_eval.json`.
+
+Pneumothorax models are known to learn the chest drain used to treat it. `python src/label_drains.py`
+shows the 195 expert-positive pneumothorax images and 200 negatives, shuffled and unlabelled, for
+drain/no-drain labelling (saved to `annotations/drain_labels.csv`). `expert_eval.py` then also reports
+pneumothorax AUROC with and without a drain.
 
 ## Thresholds
 
