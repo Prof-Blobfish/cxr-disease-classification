@@ -19,7 +19,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from config import NUM_WORKERS
+from config import EVAL_NUM_WORKERS, NUM_WORKERS
 from data import load_bundle, output_names, prepare_chexpert
 from datasets import CXRDataset, JointDataset, JointSampler, build_datasets
 from metrics import SELECTION_METRICS, ranking_metrics, sigmoid
@@ -231,6 +231,9 @@ def run_training(
         "pin_memory": use_cuda,
         "persistent_workers": NUM_WORKERS > 0,
     }
+    # Evaluation workers start fresh for each pass: on Windows every worker commits ~2.6 GB, and
+    # persistent ones would sit idle through each training epoch.
+    eval_loader_kwargs = {**loader_kwargs, "num_workers": EVAL_NUM_WORKERS, "persistent_workers": False}
     joint = cfg.get("joint")
     if joint:
         # Joint training: every NIH training image each epoch, plus `ratio` times as many CheXpert
@@ -247,7 +250,7 @@ def run_training(
         train_loader = DataLoader(
             datasets["train"], shuffle=True, worker_init_fn=seed_worker, generator=loader_generator, **loader_kwargs
         )
-    val_loader = DataLoader(datasets["val"], shuffle=False, **loader_kwargs)
+    val_loader = DataLoader(datasets["val"], shuffle=False, **eval_loader_kwargs)
 
     # ---- model and optimisation
     model = build_model(cfg, num_classes=len(output_names(cfg, bundle.class_names)))
@@ -367,7 +370,7 @@ def run_training(
 
     # ---- final evaluation of the best epoch
     eval_model.load_state_dict(torch.load(best_path, map_location=device, weights_only=False)["model"])
-    test_loader = DataLoader(datasets["test"], shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(datasets["test"], shuffle=False, **eval_loader_kwargs)
     predictions, split_metrics = {}, {}
     for split, loader in [("val", val_loader), ("test", test_loader)]:
         output, metrics = evaluate(loader, f"Best epoch ({split})")
