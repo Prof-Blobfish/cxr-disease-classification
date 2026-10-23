@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torchvision.transforms import functional as TF
 
 from data import DataBundle
@@ -73,6 +73,44 @@ class CXRDataset(Dataset):
 
         return sample
     
+class JointDataset(Dataset):
+    """Primary (NIH) images followed by auxiliary (CheXpert) images, for joint training. Targets span
+    both label sets, primary first; `mask` marks the outputs an image supervises (its own dataset's)."""
+
+    def __init__(self, primary: CXRDataset, auxiliary: CXRDataset) -> None:
+        self.primary, self.auxiliary = primary, auxiliary
+
+    def __len__(self) -> int:
+        return len(self.primary) + len(self.auxiliary)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        is_primary = idx < len(self.primary)
+        sample = self.primary[idx] if is_primary else self.auxiliary[idx - len(self.primary)]
+        own = sample["target"]
+        other = torch.zeros(len(self.auxiliary.target_columns) if is_primary else len(self.primary.target_columns))
+        own_mask, other_mask = torch.ones_like(own), torch.zeros_like(other)
+        sample["target"] = torch.cat([own, other] if is_primary else [other, own])
+        sample["mask"] = torch.cat([own_mask, other_mask] if is_primary else [other_mask, own_mask])
+        return sample
+
+
+class JointSampler(Sampler[int]):
+    """Each epoch: every primary image once, plus `ratio` times as many auxiliary images drawn at
+    random without replacement, all shuffled together."""
+
+    def __init__(self, num_primary: int, num_auxiliary: int, ratio: float, generator: torch.Generator) -> None:
+        self.num_primary, self.num_auxiliary, self.generator = num_primary, num_auxiliary, generator
+        self.auxiliary_per_epoch = min(num_auxiliary, round(ratio * num_primary))
+
+    def __len__(self) -> int:
+        return self.num_primary + self.auxiliary_per_epoch
+
+    def __iter__(self):
+        auxiliary = torch.randperm(self.num_auxiliary, generator=self.generator)[:self.auxiliary_per_epoch] + self.num_primary
+        order = torch.cat([torch.arange(self.num_primary), auxiliary])
+        yield from order[torch.randperm(len(order), generator=self.generator)].tolist()
+
+
 def build_datasets(
         bundle: DataBundle,
         train_transform=None,

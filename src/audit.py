@@ -21,7 +21,7 @@ import torch
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 
-from data import load_bundle, prepare_chexpert
+from data import load_bundle, output_names, prepare_chexpert
 from datasets import CXRDataset
 from ensemble import findings_only, to_logits
 from expert_eval import PREFIX, evaluate as expert_evaluate, labels_dir, yes
@@ -96,7 +96,8 @@ def external_chexpert(members: dict[Path, float], names: list[str]) -> dict:
     total = 0.0
     for run, weight in members.items():
         cfg = load_yaml(run / "config.yaml")
-        model = build_model({**cfg, "pretrained": False, "domain_pretrained": None}, len(load_predictions(run)[0]))
+        run_names = load_predictions(run)[0]
+        model = build_model({**cfg, "pretrained": False, "domain_pretrained": None}, len(output_names(cfg, run_names)))
         model.load_state_dict(torch.load(run / "checkpoints" / "best.pt", map_location="cpu", weights_only=False)["model"])
         model = model.to(device).eval()
         dataset = CXRDataset(test, list(test.filter(like="target_").columns), transform=build_transforms(cfg)["eval"])
@@ -109,7 +110,6 @@ def external_chexpert(members: dict[Path, float], names: list[str]) -> dict:
                 if cfg.get("tta_hflip"):
                     out = (out + model(torch.flip(images, dims=[3]))) / 2
             logits.append(out.float().cpu())
-        run_names = load_predictions(run)[0]
         total = total + weight * torch.cat(logits).numpy()[:, [run_names.index(n) for n in names]]
         del model
     per_class = {nih: {"positives": int(targets[nih].sum()), "auroc": float(roc_auc_score(targets[nih], total[:, names.index(nih)]))}

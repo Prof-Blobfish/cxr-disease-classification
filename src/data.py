@@ -101,6 +101,17 @@ def load_bundle(cfg: dict) -> DataBundle:
     return _add_abnormal_target(bundle, dataset) if cfg.get("abnormal_output", False) else bundle
 
 
+def output_names(cfg: dict, class_names: list[str]) -> list[str]:
+    """The model's outputs: the dataset's classes, then the joint dataset's when cfg['joint'] is set.
+    Predictions and metrics use only the dataset's classes, the leading outputs."""
+    joint = cfg.get("joint")
+    if not joint:
+        return list(class_names)
+    if joint.get("dataset") != "chexpert":
+        raise ValueError(f"Unsupported joint dataset: {joint.get('dataset')}")
+    return [*class_names, *(f"CheXpert: {name}" for name in CHEXPERT_FINDINGS)]
+
+
 def _add_abnormal_target(bundle: DataBundle, dataset: str) -> DataBundle:
     """NIH: any of the 14 findings. CheXpert: the report's own "No Finding" label, inverted,
     which also counts abnormalities outside the 13 findings."""

@@ -92,6 +92,9 @@ scored on the same validation images.
 
 ```yaml
 dataset: nih                     # nih | chexpert (pretraining only)
+joint: null                      # {dataset: chexpert, ratio: 1.0}: also train on CheXpert, each epoch adding
+                                 # ratio x as many CheXpert images, each supervising only its own outputs;
+                                 # validation, selection and predictions stay on the NIH findings
 abnormal_output: false           # add an "Abnormal" (any finding) output, reported as abnormal_auroc;
                                  # excluded from macro metrics, the clinical score and ensembles
 model_name: convnext_tiny        # convnext_tiny | convnext_small | efficientnet_v2_s | densenet121 | resnet50 | vit_b_16

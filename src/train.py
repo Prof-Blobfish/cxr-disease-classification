@@ -14,13 +14,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from config import NUM_WORKERS
-from data import load_bundle
-from datasets import build_datasets
+from data import load_bundle, output_names, prepare_chexpert
+from datasets import CXRDataset, JointDataset, JointSampler, build_datasets
 from metrics import SELECTION_METRICS, ranking_metrics, sigmoid
 from models.factory import build_model, build_parameter_groups, load_domain_pretrained_checkpoint
 from transforms import build_transforms
@@ -106,7 +107,14 @@ def run_epoch(
                 logits = model(images)
                 if hflip_tta and not training:
                     logits = (logits + model(torch.flip(images, dims=[3]))) / 2
-                loss = criterion(logits, targets)
+                if "mask" in batch:
+                    # Joint training: each image supervises only its own dataset's outputs.
+                    mask = batch["mask"].to(device, non_blocking=True)
+                    elementwise = F.binary_cross_entropy_with_logits(logits.float(), targets, reduction="none")
+                    loss = (elementwise * mask).sum() / mask.sum()
+                else:
+                    logits = logits[:, :targets.shape[1]]  # a joint model's extra outputs are not evaluated
+                    loss = criterion(logits, targets)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"Non-finite loss: {loss.item()}")
 
@@ -223,13 +231,26 @@ def run_training(
         "pin_memory": use_cuda,
         "persistent_workers": NUM_WORKERS > 0,
     }
-    train_loader = DataLoader(
-        datasets["train"], shuffle=True, worker_init_fn=seed_worker, generator=loader_generator, **loader_kwargs
-    )
+    joint = cfg.get("joint")
+    if joint:
+        # Joint training: every NIH training image each epoch, plus `ratio` times as many CheXpert
+        # images, each supervising its own outputs. Validation, selection and predictions stay NIH-only.
+        if cfg.get("loss", "weighted_bce") != "bce" or cfg.get("abnormal_output"):
+            raise ValueError("joint training supports loss: bce without abnormal_output.")
+        auxiliary = prepare_chexpert(split_seed=int(cfg["split_seed"]))
+        train_dataset = JointDataset(
+            datasets["train"], CXRDataset(auxiliary.train_df, auxiliary.target_columns, transform=transforms["train"])
+        )
+        sampler = JointSampler(len(datasets["train"]), len(train_dataset.auxiliary), float(joint.get("ratio", 1.0)), loader_generator)
+        train_loader = DataLoader(train_dataset, sampler=sampler, worker_init_fn=seed_worker, **loader_kwargs)
+    else:
+        train_loader = DataLoader(
+            datasets["train"], shuffle=True, worker_init_fn=seed_worker, generator=loader_generator, **loader_kwargs
+        )
     val_loader = DataLoader(datasets["val"], shuffle=False, **loader_kwargs)
 
     # ---- model and optimisation
-    model = build_model(cfg, num_classes=len(bundle.class_names))
+    model = build_model(cfg, num_classes=len(output_names(cfg, bundle.class_names)))
     domain_pretrained = load_domain_pretrained_checkpoint(model, cfg, PROJECT_ROOT)
     channels_last = bool(cfg.get("channels_last", False)) and use_cuda
     model = model.to(device, memory_format=torch.channels_last if channels_last else torch.preserve_format)

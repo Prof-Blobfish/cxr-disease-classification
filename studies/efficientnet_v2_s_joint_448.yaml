@@ -1,0 +1,15 @@
+# efficientnet_v2_s_chexpert6_448 (same 6-epoch CheXpert backbone, recipe and seeds), but fine-tuned on
+# NIH and CheXpert jointly: each epoch adds as many CheXpert images as NIH ones, each supervising its
+# own outputs (CheXpert's include Support Devices). Tests whether more data during fine-tuning helps,
+# and whether keeping a device concept weakens the chest-drain shortcut (src/expert_eval.py).
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  image_size: 448
+  num_epochs: 6
+  joint: {dataset: chexpert, ratio: 1.0}
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/efficientnet_v2_s_chexpert_pretrain_e6/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42, 44]
