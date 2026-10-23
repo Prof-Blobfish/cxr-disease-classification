@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from config import RANDOM_SEED, VAL_SPLIT, chexpert_path, dataset_path
+from metrics import ABNORMAL_CLASS
 
 # CheXpert findings used as pretraining targets ("No Finding" is implied by all-zero targets).
 CHEXPERT_FINDINGS = [
@@ -88,13 +89,44 @@ def prepare_data(
 
 
 def load_bundle(cfg: dict) -> DataBundle:
-    """The dataset named by cfg['dataset'] (nih by default)."""
+    """The dataset named by cfg['dataset'] (nih by default), plus an "Abnormal" target
+    when cfg['abnormal_output'] is set."""
     dataset = str(cfg.get("dataset", "nih"))
     if dataset == "nih":
-        return prepare_data(split_seed=int(cfg["split_seed"]))
-    if dataset == "chexpert":
-        return prepare_chexpert(split_seed=int(cfg["split_seed"]))
-    raise ValueError(f"Unsupported dataset: {dataset}")
+        bundle = prepare_data(split_seed=int(cfg["split_seed"]))
+    elif dataset == "chexpert":
+        bundle = prepare_chexpert(split_seed=int(cfg["split_seed"]))
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset}")
+    return _add_abnormal_target(bundle, dataset) if cfg.get("abnormal_output", False) else bundle
+
+
+def _add_abnormal_target(bundle: DataBundle, dataset: str) -> DataBundle:
+    """NIH: any of the 14 findings. CheXpert: the report's own "No Finding" label, inverted,
+    which also counts abnormalities outside the 13 findings."""
+    column = _target_column(ABNORMAL_CLASS)
+
+    def add(df: pd.DataFrame) -> pd.DataFrame:
+        if dataset == "chexpert":
+            abnormal = (df["No Finding"] != 1).astype(int)
+        else:
+            abnormal = df[bundle.target_columns].max(axis=1).astype(int)
+        return df.assign(**{column: abnormal})
+
+    train_df, val_df, test_df = add(bundle.train_df), add(bundle.val_df), add(bundle.test_df)
+    class_names = [*bundle.class_names, ABNORMAL_CLASS]
+    target_columns = [*bundle.target_columns, column]
+    return DataBundle(
+        all_df=pd.concat([train_df, val_df, test_df], ignore_index=True),
+        train_df=train_df,
+        val_df=val_df,
+        test_df=test_df,
+        bbox_df=bundle.bbox_df,
+        class_names=class_names,
+        label_to_index={label: index for index, label in enumerate(class_names)},
+        target_columns=target_columns,
+        pos_weights=_compute_pos_weight(train_df, target_columns),
+    )
 
 
 def prepare_chexpert(

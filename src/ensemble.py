@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from metrics import SELECTION_METRICS, ranking_metrics, sigmoid
+from metrics import ABNORMAL_CLASS, SELECTION_METRICS, ranking_metrics, sigmoid
 from report import load_predictions
 from utils import PROJECT_ROOT, load_yaml, save_json
 
@@ -40,6 +40,13 @@ def find_runs(patterns: list[str]) -> list[Path]:
 
 def label(run: Path) -> str:
     return str(run.relative_to(PROJECT_ROOT / "outputs")).replace("\\", "/")
+
+
+def findings_only(names: list[str], splits: dict) -> tuple[list[str], dict]:
+    """Drop the optional "Abnormal" output, so runs with and without it can be ensembled."""
+    keep = [index for index, name in enumerate(names) if name != ABNORMAL_CLASS]
+    return [names[i] for i in keep], {split: (probs[:, keep], targets[:, keep], ids)
+                                      for split, (probs, targets, ids) in splits.items()}
 
 
 def to_logits(probs: np.ndarray) -> np.ndarray:
@@ -94,7 +101,7 @@ def main() -> None:
 
     candidates, class_names, reference = {}, None, None
     for run in runs:
-        names, splits = load_predictions(run)
+        names, splits = findings_only(*load_predictions(run))
         ids = (splits["val"][2], splits["test"][2])
         if reference is None:
             class_names, reference = names, ids

@@ -88,6 +88,8 @@ scored on the same validation images.
 
 ```yaml
 dataset: nih                     # nih | chexpert (pretraining only)
+abnormal_output: false           # add an "Abnormal" (any finding) output, reported as abnormal_auroc;
+                                 # excluded from macro metrics, the clinical score and ensembles
 model_name: convnext_tiny        # convnext_tiny | convnext_small | efficientnet_v2_s | densenet121 | resnet50 | vit_b_16
 pretrained: true                 # ImageNet weights (SWAG weights for vit_b_16, which needs image_size: 384)
 selection_metric: clinical_score # clinical_score | macro_auprc | macro_auroc | loss

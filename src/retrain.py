@@ -12,7 +12,7 @@ import argparse
 
 import numpy as np
 
-from ensemble import REPORTED, score, to_logits
+from ensemble import REPORTED, findings_only, score, to_logits
 from report import load_predictions
 from train import run_training
 from utils import PROJECT_ROOT, load_json, load_yaml, save_json
@@ -42,8 +42,8 @@ def main() -> None:
     class_names, test_logits, targets, image_ids = None, 0.0, None, None
     comparison = {}
     for member, weight in members.items():
-        names, splits = load_predictions(retrained[member])
-        _, original_splits = load_predictions(PROJECT_ROOT / "outputs" / member)
+        names, splits = findings_only(*load_predictions(retrained[member]))
+        _, original_splits = findings_only(*load_predictions(PROJECT_ROOT / "outputs" / member))
         if class_names is None:
             class_names, (_, targets, image_ids) = names, splits["test"]
         if names != class_names or not np.array_equal(splits["test"][2], image_ids):

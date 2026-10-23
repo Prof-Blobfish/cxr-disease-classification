@@ -1,0 +1,15 @@
+# efficientnet_v2_s_chexpert6_448 with an "Abnormal" (any finding) output in both stages.
+# Compare abnormal_auroc against the same runs' derived any-finding score, and macro AUROC
+# against efficientnet_v2_s_chexpert6_448 (same recipe and seeds).
+# Train first: python src/train.py --config experiments/efficientnet_v2_s_chexpert_pretrain_abnormal.yaml --seed 42
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  image_size: 448
+  num_epochs: 6
+  abnormal_output: true
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/efficientnet_v2_s_chexpert_pretrain_abnormal/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings + Abnormal), 6 epochs"
+    backbone_only: true
+seeds: [42, 44]

@@ -17,6 +17,9 @@ SELECTION_METRICS = {
     "loss": "minimize",
 }
 
+# Name of the optional "any finding" output added by `abnormal_output: true`.
+ABNORMAL_CLASS = "Abnormal"
+
 DEFAULT_CLINICAL_SCORE = {
     "sensitivity_range": [0.90, 0.99],
     "prevalence_weight_power": 0.5,
@@ -69,14 +72,17 @@ def ranking_metrics(
         })
 
     per_class = pd.DataFrame(rows)
-    valid = per_class.dropna(subset=["auroc"])
+    # The optional "any finding" output is reported on its own; macro metrics and the clinical
+    # score stay over the findings, so they remain comparable with models that lack it.
+    abnormal = per_class[per_class["class_name"] == ABNORMAL_CLASS].dropna(subset=["auroc"]) if "auroc" in per_class else per_class.iloc[:0]
+    valid = per_class[per_class["class_name"] != ABNORMAL_CLASS].dropna(subset=["auroc"])
     weights = valid["prevalence"] ** float(cfg["prevalence_weight_power"])
     weights = weights / weights.sum()
     per_class.loc[valid.index, "clinical_weight"] = weights
 
     weighted_nap = float(weights @ valid["normalized_auprc"])
     weighted_spec = float(weights @ valid["high_sensitivity_specificity"])
-    return {
+    result = {
         "macro_auroc": float(valid["auroc"].mean()),
         "macro_auprc": float(valid["auprc"].mean()),
         "clinical_score": ranking_weight * weighted_nap + (1.0 - ranking_weight) * weighted_spec,
@@ -84,6 +90,10 @@ def ranking_metrics(
         "weighted_high_sensitivity_specificity": weighted_spec,
         "per_class": per_class,
     }
+    if len(abnormal):
+        result["abnormal_auroc"] = float(abnormal["auroc"].iloc[0])
+        result["abnormal_auprc"] = float(abnormal["auprc"].iloc[0])
+    return result
 
 
 def f1_optimal_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
