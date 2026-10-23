@@ -45,6 +45,12 @@ DATASET_PATH=/absolute/path/to/nih-chest-xrays
 The dataset directory must contain `Data_Entry_2017.csv`, `BBox_List_2017.csv`,
 `train_val_list.txt`, `test_list.txt` and images under `images_*/images/*.png`.
 
+For CheXpert pretraining, also add `CHEXPERT_PATH=/absolute/path/to/CheXpert-v1.0-small`
+(the folder holding `train.csv`, `valid.csv`, `train/` and `valid/`). Configs with
+`dataset: chexpert` train on its frontal images. Patients are split 95/5 into train/val,
+and the official `valid.csv` is used as test. The resulting `checkpoints/best.pt` is then loaded
+through `domain_pretrained` for NIH fine-tuning (`studies/*_chexpert_*.yaml`).
+
 See [COMMANDS.md](COMMANDS.md) for copy-paste commands.
 
 ## Source layout
@@ -61,6 +67,7 @@ src/
   study.py         studies (Optuna)
   report.py        reports for a run or a study
   ensemble.py      validation-selected ensembles of finished runs
+  retrain.py       retrain an ensemble's members on train + val
   utils.py         YAML/JSON helpers, dotted-key overrides
 experiments/       one YAML per model profile (tracked)
 studies/           one YAML per study (tracked)
@@ -80,6 +87,7 @@ scored on the same validation images.
 ## Config reference (`experiments/*.yaml`)
 
 ```yaml
+dataset: nih                     # nih | chexpert (pretraining only)
 model_name: convnext_tiny        # convnext_tiny | convnext_small | efficientnet_v2_s | densenet121 | resnet50 | vit_b_16
 pretrained: true                 # ImageNet weights (SWAG weights for vit_b_16, which needs image_size: 384)
 selection_metric: clinical_score # clinical_score | macro_auprc | macro_auroc | loss
@@ -90,6 +98,8 @@ num_epochs: 12
 warmup_epochs: 1                 # linear warmup, then cosine decay to 0 at num_epochs (stepped per batch)
 scheduler: cosine                # cosine | none
 patience: null                   # null: train every epoch; an int stops early. The best epoch is kept either way
+fixed_epoch: null                # keep this epoch instead of selecting on validation, and stop after it
+train_on_val: false              # add validation to training (final retraining; requires fixed_epoch)
 optimizer:                       # AdamW with separate backbone / head learning rates
   backbone_lr: 7.95e-05
   head_lr: 1.23e-03
@@ -228,6 +238,17 @@ partly fit validation noise. `--weights greedy|balanced` overrides the choice.
 Logits are averaged (`--combine logit`, the default). Probabilities from `weighted_bce` runs
 are inflated, so averaging probabilities would weight models by calibration rather than quality.
 Test metrics are printed for both weightings, but they are never used to choose.
+
+Once an ensemble is chosen, its members can be retrained on train + val:
+
+```bash
+python src/retrain.py <name>
+```
+
+Each member keeps its config and LR schedule, trains on the 15% extra images, and keeps the
+epoch validation chose for it. The members' weights are reused unchanged. Output goes to
+`outputs/trainval/` and `outputs/ensembles/<name>_trainval/`. After retraining, only the test
+metrics are held out.
 
 ## Thresholds
 

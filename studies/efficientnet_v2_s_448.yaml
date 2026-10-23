@@ -1,0 +1,8 @@
+# EfficientNetV2-S at 448px for 6 epochs: the winner of efficientnet_v2_s_schedule
+# (val clinical 0.342 vs 0.336 for 384px / 12 epochs; seeds differ by ~0.0015).
+# Seed 42 is efficientnet_v2_s_schedule/trial_004; this adds the second seed.
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  image_size: 448
+  num_epochs: 6
+seeds: [44]

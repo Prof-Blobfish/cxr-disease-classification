@@ -6,7 +6,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config import RANDOM_SEED, VAL_SPLIT, dataset_path
+from config import RANDOM_SEED, VAL_SPLIT, chexpert_path, dataset_path
+
+# CheXpert findings used as pretraining targets ("No Finding" is implied by all-zero targets).
+CHEXPERT_FINDINGS = [
+    "Enlarged Cardiomediastinum", "Cardiomegaly", "Lung Opacity", "Lung Lesion", "Edema",
+    "Consolidation", "Pneumonia", "Atelectasis", "Pneumothorax", "Pleural Effusion",
+    "Pleural Other", "Fracture", "Support Devices",
+]
+# Uncertain (-1) labels become positive for these and negative for the rest; this
+# U-Ones / U-Zeros mix worked best in the CheXpert paper (Irvin et al., 2019).
+CHEXPERT_UNCERTAIN_POSITIVE = {"Atelectasis", "Edema"}
 
 
 @dataclass
@@ -76,7 +86,75 @@ def prepare_data(
     )
 
 
-    
+
+def load_bundle(cfg: dict) -> DataBundle:
+    """The dataset named by cfg['dataset'] (nih by default)."""
+    dataset = str(cfg.get("dataset", "nih"))
+    if dataset == "nih":
+        return prepare_data(split_seed=int(cfg["split_seed"]))
+    if dataset == "chexpert":
+        return prepare_chexpert(split_seed=int(cfg["split_seed"]))
+    raise ValueError(f"Unsupported dataset: {dataset}")
+
+
+def prepare_chexpert(
+        root: str | Path | None = None,
+        val_fraction: float = 0.05,
+        split_seed: int = RANDOM_SEED,
+) -> DataBundle:
+    """CheXpert-v1.0-small frontal images, for pretraining before NIH fine-tuning.
+
+    train.csv is split by patient into train/val; the official valid.csv (radiologist
+    labels, 200 patients) is the test split. Blank labels are negative.
+    """
+    if root is None and not chexpert_path:
+        raise RuntimeError("CHEXPERT_PATH not found in .env")
+    dataset_root = _resolve_root(chexpert_path if root is None else root)
+
+    def load(csv_name: str) -> pd.DataFrame:
+        df = pd.read_csv(dataset_root / csv_name)
+        df = df[df["Frontal/Lateral"] == "Frontal"].copy()
+        # Paths start with the archive's own folder name; resolve them against the actual root.
+        relative = df["Path"].map(lambda path: Path(*Path(path).parts[1:]))
+        df["image_path"] = [str(dataset_root / path) for path in relative]
+        df["image_id"] = [path.as_posix() for path in relative]
+        df["patient_id"] = [path.parts[1] for path in relative]
+        for finding in CHEXPERT_FINDINGS:
+            uncertain = 1 if finding in CHEXPERT_UNCERTAIN_POSITIVE else 0
+            df[_target_column(finding)] = df[finding].fillna(0).replace(-1, uncertain).astype(int)
+        return df.reset_index(drop=True)
+
+    train_val_df, test_df = load("train.csv"), load("valid.csv")
+    missing = [path for path in train_val_df["image_path"].head(5) if not Path(path).is_file()]
+    if missing:
+        raise FileNotFoundError(f"CheXpert images not found, e.g. {missing[0]}")
+
+    patient_ids = np.array(sorted(train_val_df["patient_id"].unique()))
+    np.random.default_rng(split_seed).shuffle(patient_ids)
+    val_patients = set(patient_ids[:max(1, int(round(len(patient_ids) * val_fraction)))])
+    is_val = train_val_df["patient_id"].isin(val_patients)
+    train_df = train_val_df[~is_val].reset_index(drop=True).assign(split="train")
+    val_df = train_val_df[is_val].reset_index(drop=True).assign(split="val")
+    test_df = test_df.assign(split="test")
+
+    target_columns = [_target_column(finding) for finding in CHEXPERT_FINDINGS]
+    return DataBundle(
+        all_df=pd.concat([train_df, val_df, test_df], ignore_index=True),
+        train_df=train_df,
+        val_df=val_df,
+        test_df=test_df,
+        bbox_df=pd.DataFrame(),
+        class_names=list(CHEXPERT_FINDINGS),
+        label_to_index={label: index for index, label in enumerate(CHEXPERT_FINDINGS)},
+        target_columns=target_columns,
+        pos_weights=_compute_pos_weight(train_df, target_columns),
+    )
+
+
+def _target_column(label: str) -> str:
+    return "target_" + label.lower().replace(" ", "_").replace("-", "_")
+
+
 # Standardize dataset loc into Path object
 def _resolve_root(root: str | Path | None) -> Path:
     dataset_root = Path(dataset_path if root is None else root).expanduser().resolve()

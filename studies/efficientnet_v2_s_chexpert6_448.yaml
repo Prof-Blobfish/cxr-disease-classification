@@ -1,0 +1,12 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: efficientnet_v2_s_chexpert_448, but 6 pretraining epochs instead of 3, with the backbone from
+# experiments/efficientnet_v2_s_chexpert_pretrain_e6.yaml (train that first, seed 42). Same recipe as the ImageNet runs.
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  image_size: 448
+  num_epochs: 6
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/efficientnet_v2_s_chexpert_pretrain_e6/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42, 44]

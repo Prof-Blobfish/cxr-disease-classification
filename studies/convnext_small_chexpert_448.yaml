@@ -1,0 +1,14 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: ConvNeXt-Small with the convnext_tiny_chexpert_448
+# recipe and the backbone from experiments/convnext_small_chexpert_pretrain.yaml (train that first).
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  model_name: convnext_small
+  image_size: 448
+  batch_size: 16
+  num_epochs: 9
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/convnext_small_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42, 44]

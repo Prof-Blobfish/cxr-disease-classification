@@ -47,7 +47,12 @@ def build_model(cfg: dict[str, Any], num_classes: int) -> nn.Module:
     kwargs = {}
     if cfg.get("drop_path") is not None:  # stochastic depth; ConvNeXt and EfficientNet only
         kwargs["stochastic_depth_prob"] = float(cfg["drop_path"])
-    model = constructor(weights=weights if cfg.get("pretrained", True) else None, **kwargs)
+    pretrained = cfg.get("pretrained", True)
+    if constructor is vit_b_16 and not pretrained:
+        # Without weights torchvision builds ViT for 224px; size the position embedding for the
+        # configured input instead (and for a domain checkpoint trained at that size).
+        kwargs["image_size"] = int(cfg["image_size"])
+    model = constructor(weights=weights if pretrained else None, **kwargs)
 
     head = getattr(model, head_attr)
     if isinstance(head, nn.Sequential):  # ConvNeXt: LayerNorm -> Flatten -> Linear; EfficientNet: Dropout -> Linear
@@ -107,7 +112,8 @@ def _checkpoint_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
     if not isinstance(checkpoint, dict):
         raise TypeError("Domain checkpoint must be a mapping or contain model_state_dict.")
 
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    # model_state_dict: common external format; model: this project's checkpoints/best.pt
+    state_dict = checkpoint.get("model_state_dict", checkpoint.get("model", checkpoint))
     if not isinstance(state_dict, dict):
         raise TypeError("Domain checkpoint model_state_dict must be a mapping.")
 

@@ -1,0 +1,11 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: vit_b_16_384 with the backbone from
+# experiments/vit_b_16_chexpert_pretrain.yaml (train that first, seed 42). Same recipe as the ImageNet runs.
+base_config: experiments/vit_b_16_v1.yaml
+overrides:
+  image_size: 384
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/vit_b_16_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings)"
+    backbone_only: true
+seeds: [42]

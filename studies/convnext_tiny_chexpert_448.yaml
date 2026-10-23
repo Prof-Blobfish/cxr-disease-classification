@@ -1,0 +1,15 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: convnext_tiny_v8_448 with the backbone from
+# experiments/convnext_tiny_chexpert_pretrain.yaml. Same recipe and seeds, so the
+# difference is the initialisation alone. Train the pretraining run first:
+#   python src/train.py --config experiments/convnext_tiny_chexpert_pretrain.yaml --seed 42
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  image_size: 448
+  batch_size: 16
+  num_epochs: 9
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/convnext_tiny_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings)"
+    backbone_only: true
+seeds: [42, 44]

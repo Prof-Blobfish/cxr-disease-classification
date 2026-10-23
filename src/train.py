@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import random
 import subprocess
@@ -18,7 +19,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from config import NUM_WORKERS
-from data import prepare_data
+from data import load_bundle
 from datasets import build_datasets
 from metrics import SELECTION_METRICS, ranking_metrics, sigmoid
 from models.factory import build_model, build_parameter_groups, load_domain_pretrained_checkpoint
@@ -202,7 +203,14 @@ def run_training(
     set_global_seed(seed, deterministic=bool(cfg.get("deterministic", False)))
 
     # ---- data
-    bundle = prepare_data(split_seed=int(cfg["split_seed"]))
+    bundle = load_bundle(cfg)
+    if cfg.get("train_on_val", False):
+        # Final retraining: validation joins the training set, so its metrics are no longer
+        # held out and the epoch to keep must be fixed in advance (fixed_epoch).
+        if cfg.get("fixed_epoch") is None:
+            raise ValueError("train_on_val needs fixed_epoch: validation can no longer select the epoch.")
+        bundle = dataclasses.replace(bundle, train_df=pd.concat([bundle.train_df, bundle.val_df], ignore_index=True))
+    fixed_epoch = cfg.get("fixed_epoch")
     transforms = build_transforms(cfg)
     datasets = build_datasets(bundle, train_transform=transforms["train"], eval_transform=transforms["eval"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -303,7 +311,8 @@ def run_training(
             "lr_backbone": optimizer.param_groups[-2]["lr"],  # top backbone layer under layer_decay
             "lr_head": optimizer.param_groups[-1]["lr"],
         })
-        if is_better(value, best_value, direction):
+        keep = epoch == int(fixed_epoch) if fixed_epoch is not None else is_better(value, best_value, direction)
+        if keep:
             best_value, best_epoch, bad_epochs = value, epoch, 0
             torch.save({"epoch": epoch, "model": eval_model.state_dict()}, best_path)
         else:
@@ -330,6 +339,9 @@ def run_training(
 
         if report_epoch is not None:
             report_epoch(value, epoch)
+        if fixed_epoch is not None and epoch >= int(fixed_epoch):
+            stop_reason = "fixed_epoch"  # the LR schedule still spans num_epochs; later epochs are not needed
+            break
 
     # ---- final evaluation of the best epoch
     eval_model.load_state_dict(torch.load(best_path, map_location=device, weights_only=False)["model"])
