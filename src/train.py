@@ -304,7 +304,8 @@ def run_training(
         restore_rng_state(state["rng"], loader_generator)
         history, best_value, best_epoch, bad_epochs = state["history"], state["best_value"], state["best_epoch"], state["bad_epochs"]
         start_epoch = state["epoch"] + 1
-        print(f"Resuming {run_dir} at epoch {start_epoch} (best so far: epoch {best_epoch}, {best_value:.4f})")
+        best_so_far = f"epoch {best_epoch}, {best_value:.4f}" if best_value is not None else "none yet"  # None until fixed_epoch
+        print(f"Resuming {run_dir} at epoch {start_epoch} (best so far: {best_so_far})")
 
     print(f"Run: {run_dir} | model={cfg['model_name']} seed={seed} device={device} "
           f"train/val/test={len(bundle.train_df)}/{len(bundle.val_df)}/{len(bundle.test_df)}")
