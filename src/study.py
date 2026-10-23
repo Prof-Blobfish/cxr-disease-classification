@@ -65,7 +65,10 @@ def default_n_trials(study_cfg: dict) -> int:
 
 def retry_failed_trials(study: optuna.Study) -> None:
     """Re-queue crashed or interrupted trials with the same params and run directory."""
-    optuna.storages.fail_stale_trials(study)
+    # One process runs a study at a time, so a trial still RUNNING at start-up was interrupted (killed or
+    # hung). Without storage heartbeats, fail_stale_trials would never mark it, and a new trial would start.
+    for interrupted in study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.RUNNING,)):
+        study._storage.set_trial_state_values(interrupted._trial_id, state=optuna.trial.TrialState.FAIL)
     trials = study.get_trials(deepcopy=False)
     for failed in (t for t in trials if t.state == optuna.trial.TrialState.FAIL):
         run_id = failed.user_attrs.get("run_id", failed.number)
