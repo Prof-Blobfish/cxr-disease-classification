@@ -124,6 +124,15 @@ noise tends to understate the shortcut.
 5. **Cardiomegaly on AP films** (0.87 vs 0.94 PA): the AP projection magnifies the heart.
 6. **Pneumonia, hernia and fibrosis** have too few expert positives (2, 5 and 13) to evaluate.
 
+## Tried and not adopted
+
+- **A dedicated "Abnormal" output** (`abnormal_output: true`), trained on CheXpert's explicit "No
+  Finding" label and then NIH. Against expert normal/abnormal labels, the output scored 0.911,
+  versus 0.917 for the same model's score derived from its findings and 0.926 for the same recipe
+  without it. The 14-finding test AUROC was unchanged (0.8396). Normal vs abnormal is derived from
+  the findings instead: P(any finding) = 1 − ∏(1 − p).
+- **Recipe tuning for EfficientNetV2-S** (shorter schedules, lower LR, more stochastic depth): no gain on test.
+
 ## Ethical considerations
 
 NIH has no race or ethnicity field, so race-related underdiagnosis (Seyyed-Kalantari et al., Nat Med
