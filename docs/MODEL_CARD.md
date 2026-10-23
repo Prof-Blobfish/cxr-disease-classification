@@ -102,15 +102,18 @@ on the mixed set. PPV depends on prevalence. Re-derive both for any new setting.
 | View | 0.841 PA vs 0.824 AP. **PA films are missed more:** 12.0% of abnormal PA films have nothing flagged, vs 6.3% AP. |
 | Prior studies | AUROC 0.886 on first studies vs 0.820 on patients with 10+ studies, but **22.7% of abnormal first studies have nothing flagged** (vs 6.0%). |
 | Equipment shortcut | No large effect: pneumothorax without any equipment vs negatives with equipment, AUROC 0.906. |
-| **Chest drain shortcut** | **Present.** Pneumothorax AUROC 0.945 with a drain vs **0.896 without**; untreated pneumothorax vs drained negatives **0.780** (bootstrap 95% CI for the with/without gap: +0.017 to +0.084). |
+| **Chest drain shortcut** | **Present.** With NEATX drain labels on 1,760 test positives (NIH labels): AUROC 0.947 with a drain vs **0.880 without**, gap +0.068 (95% CI +0.057 to +0.079). The ImageNet-only ensemble's gap was +0.104, so CheXpert pretraining cut it by about a third. Expert labels with our own drain labels agree: 0.945 vs 0.896, and untreated pneumothorax vs drained negatives **0.780**. |
 
-Underdiagnosis rates use F1 thresholds chosen on NIH validation. Drain labels were made by a
-non-radiologist (`annotations/`) and are noisy, which tends to understate the shortcut.
+Underdiagnosis rates use F1 thresholds chosen on NIH validation. Our drain labels (`annotations/`)
+and NEATX's (Damgaard et al., arXiv 2309.02244; two annotators, 96.5% agreement) were both made by
+non-radiologists. They agree with each other on 82% of 65 shared images (kappa about 0.55). Label
+noise tends to understate the shortcut.
 
 ## Known failure modes
 
-1. **Untreated pneumothorax is detected less well than the headline number suggests:** about 0.90
-   AUROC, and 0.78 when the comparison films have drains. The model partly uses chest drains as evidence.
+1. **Untreated pneumothorax is detected less well than the headline number suggests:** about
+   0.88–0.90 AUROC, and 0.78 when the comparison films have drains. The model partly uses chest drains
+   as evidence.
 2. **New and outpatient-like patients** (first study, PA view) are underdiagnosed most. The NIH test
    set is dominated by heavily re-imaged inpatients, so its headline numbers flatter performance on a
    screening population.

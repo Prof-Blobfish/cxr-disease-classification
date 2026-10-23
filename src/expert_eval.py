@@ -166,7 +166,36 @@ def evaluate(run_dir: Path, folder: Path) -> dict:
                 "auroc_without_drain_vs_negatives_with_drain": compare(ids(1, no_drain), ids(0, ("drain",))),
             }
         result["pneumothorax_shortcuts"] = shortcuts
+
+    # ---- pneumothorax with vs without a drain on NIH-label positives, from NEATX (non-expert drain
+    # labels for ~1,760 test positives; Damgaard et al., arXiv 2309.02244), when NEATX_PATH is set.
+    neatx = neatx_drains()
+    if neatx is not None:
+        score, positive = probs["Pneumothorax"], nih["Pneumothorax"]
+        negatives = positive.index[positive == 0]
+        drains = neatx.reindex(positive.index[positive == 1]).dropna()
+
+        def against_negatives(positive_ids: pd.Index) -> float:
+            both = positive_ids.append(negatives)
+            return auc(np.r_[np.ones(len(positive_ids)), np.zeros(len(negatives))], score.loc[both].to_numpy())
+
+        result["pneumothorax_neatx"] = {
+            "positives_with_drain": int((drains == 1).sum()), "positives_without_drain": int((drains == 0).sum()),
+            "negatives": len(negatives),
+            "auroc_with_drain": against_negatives(drains.index[drains == 1]),
+            "auroc_without_drain": against_negatives(drains.index[drains == 0]),
+        }
     return result
+
+
+def neatx_drains() -> pd.Series | None:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+    path = os.getenv("NEATX_PATH")
+    if not path:
+        return None
+    labels = pd.read_csv(Path(path) / "NIH-CX14_TubeAnnotations_NonExperts_aggregated.csv")
+    return labels.set_index("Image Index")["Drain"]
 
 
 def device_status() -> pd.Series | None:
@@ -205,6 +234,12 @@ def print_result(result: dict) -> None:
         for key, value in shortcuts.items():
             if key.startswith("auroc_"):
                 print(f"  {key.removeprefix('auroc_').replace('_', ' '):52}{value:.4f}")
+    if "pneumothorax_neatx" in result:
+        neatx = result["pneumothorax_neatx"]
+        print(f"\nPneumothorax by drain, NIH-label positives with NEATX drain labels (vs {neatx['negatives']} negatives)")
+        print(f"  with drain ({neatx['positives_with_drain']}): {neatx['auroc_with_drain']:.4f}   "
+              f"without drain ({neatx['positives_without_drain']}): {neatx['auroc_without_drain']:.4f}   "
+              f"gap {neatx['auroc_with_drain'] - neatx['auroc_without_drain']:+.4f}")
 
 
 def main() -> None:

@@ -282,6 +282,12 @@ with equipment (chest drain vs other equipment). Labels go to `annotations/`. `e
 also reports pneumothorax AUROC with and without each cue, and the stress test of positives lacking
 the cue against negatives that have it.
 
+For a larger drain check, download `NIH-CX14_TubeAnnotations_NonExperts_aggregated.csv` from
+[NEATX](https://zenodo.org/records/14944064) (non-expert drain labels for about 3,500 NIH pneumothorax
+images, CC BY-NC-SA) and set `NEATX_PATH=...` in `.env`. `expert_eval.py` then reports pneumothorax
+AUROC with and without a drain on the roughly 1,760 test positives it covers. The file is not
+redistributed here.
+
 ## Thresholds
 
 `report.py` chooses per-class thresholds **on validation** and applies them unchanged
