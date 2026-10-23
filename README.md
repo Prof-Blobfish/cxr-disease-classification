@@ -69,6 +69,8 @@ src/
   ensemble.py      validation-selected ensembles of finished runs
   retrain.py       retrain an ensemble's members on train + val
   expert_eval.py   score runs against radiologist-adjudicated NIH test labels
+  audit.py         reliability audit (subgroups, calibration, external, expert, operating points);
+                   the numbers behind docs/MODEL_CARD.md
   label_drains.py  label chest drains on expert-labelled images (pneumothorax shortcut check)
   utils.py         YAML/JSON helpers, dotted-key overrides
 experiments/       one YAML per model profile (tracked)
