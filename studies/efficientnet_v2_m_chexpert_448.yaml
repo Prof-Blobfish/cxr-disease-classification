@@ -1,0 +1,15 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: efficientnet_v2_m at 448px with the backbone from
+# experiments/efficientnet_v2_m_chexpert_pretrain.yaml (train that first, seed 42). Larger sibling of EfficientNetV2-S.
+# Batch size is provisional until measured with src/benchmark.py.
+base_config: experiments/efficientnet_v2_s_v1.yaml
+overrides:
+  model_name: efficientnet_v2_m
+  image_size: 448
+  batch_size: 16
+  num_epochs: 6
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/efficientnet_v2_m_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]

@@ -1,0 +1,16 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: swin_v2_b at 448px with the backbone from
+# experiments/swin_v2_b_chexpert_pretrain.yaml (train that first, seed 42). Windowed transformer, for ensemble diversity.
+# Batch size is provisional until measured with src/benchmark.py.
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  model_name: swin_v2_b
+  image_size: 448
+  batch_size: 16
+  num_epochs: 9
+  amp_dtype: bfloat16
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/swin_v2_b_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]

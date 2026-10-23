@@ -1,0 +1,39 @@
+# Stage 1 of ImageNet -> CheXpert -> NIH for swin_v2_b: the convnext_tiny_v8 recipe on CheXpert-v1.0-small
+# frontal images (13 findings), 6 epochs. Windowed transformer, for ensemble diversity.
+# Batch size is provisional until measured with src/benchmark.py. Selected on macro AUROC:
+# CheXpert's mapped uncertain labels distort the clinical score.
+dataset: chexpert
+model_name: swin_v2_b
+pretrained: true
+selection_metric: macro_auroc
+split_seed: 0
+deterministic: false
+use_amp: true
+amp_dtype: bfloat16
+channels_last: true
+compile_model: true
+image_size: 384
+batch_size: 24
+num_epochs: 6
+warmup_epochs: 1
+patience: null            # train the full schedule; the best epoch is still kept
+optimizer:
+  backbone_lr: 7.95e-05
+  head_lr: 1.23e-03
+  weight_decay: 0.05
+scheduler: cosine
+ema_decay: 0.999
+drop_path: 0.2
+loss: bce                 # weighted_bce = pos_weight-balanced BCE (v7)
+tta_hflip: true
+augmentation:
+  train:
+    random_resized_crop_scale: [0.75, 1.0]
+    horizontal_flip: true
+    rotation_deg: 15
+    brightness: 0.15
+    contrast: 0.15
+clinical_score:
+  sensitivity_range: [0.90, 0.99]
+  prevalence_weight_power: 0.5
+  ranking_weight: 0.6

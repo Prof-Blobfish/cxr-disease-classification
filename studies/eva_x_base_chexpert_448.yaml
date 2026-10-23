@@ -1,0 +1,18 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: eva_x_base at 448px with the backbone from
+# experiments/eva_x_base_chexpert_pretrain.yaml (train that first, seed 42). Starts from EVA-X (masked image modelling on ~520k chest X-rays), not ImageNet.
+# Batch size is provisional until measured with src/benchmark.py.
+base_config: experiments/vit_b_16_v1.yaml
+overrides:
+  model_name: eva_x_base
+  image_size: 448
+  batch_size: 24
+  num_epochs: 8
+  optimizer.backbone_lr: 1.0e-04
+  optimizer.layer_decay: 0.65
+  drop_path: 0.1
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/eva_x_base_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "EVA-X -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]

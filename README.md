@@ -69,6 +69,7 @@ src/
   ensemble.py      validation-selected ensembles of finished runs
   retrain.py       retrain an ensemble's members on train + val
   expert_eval.py   score runs against radiologist-adjudicated NIH test labels
+  benchmark.py     GPU memory and speed per architecture, for choosing batch sizes
   audit.py         reliability audit (subgroups, calibration, external, expert, operating points);
                    the numbers behind docs/MODEL_CARD.md
   label_drains.py  label chest drains on expert-labelled images (pneumothorax shortcut check)
@@ -97,7 +98,9 @@ joint: null                      # {dataset: chexpert, ratio: 1.0}: also train o
                                  # validation, selection and predictions stay on the NIH findings
 abnormal_output: false           # add an "Abnormal" (any finding) output, reported as abnormal_auroc;
                                  # excluded from macro metrics, the clinical score and ensembles
-model_name: convnext_tiny        # convnext_tiny | convnext_small | efficientnet_v2_s | densenet121 | resnet50 | vit_b_16
+model_name: convnext_tiny        # convnext_tiny | convnext_small | convnext_base | efficientnet_v2_s | efficientnet_v2_m
+                                 # | densenet121 | resnet50 | vit_b_16 | swin_v2_b | maxvit_t (image_size a multiple
+                                 # of 224) | eva_x_base (chest X-ray pretrained; needs timm and weights/eva_x, below)
 pretrained: true                 # ImageNet weights (SWAG weights for vit_b_16, which needs image_size: 384)
 selection_metric: clinical_score # clinical_score | macro_auprc | macro_auroc | loss
 split_seed: 0
@@ -225,6 +228,17 @@ outputs/studies/<study>/
 Runs created by the previous pipeline (in `outputs/runs/`) can still be reported
 with `report.py`; their prediction CSVs were saved in fp16 precision, so their AP
 values are slightly understated.
+
+## EVA-X backbone
+
+`eva_x_base` starts from [EVA-X](https://github.com/hustvl/EVA-X) (Yao et al., npj Digit Med 2025),
+a ViT-B/16 pretrained by masked image modelling on about 520k chest X-rays (NIH, CheXpert,
+MIMIC-CXR; the authors exclude NIH test images). It is built with timm's EVA-02 implementation
+(`pip install timm==1.0.29`), so the authors' xformers/apex code is not needed. Download
+`eva_x_base_patch16_merged520k_mim.pt` from [huggingface.co/MapleF/eva_x](https://huggingface.co/MapleF/eva_x),
+not the `*_cxr14_ft` checkpoints, which were fine-tuned on NIH while monitoring its test set.
+It is a DeepSpeed checkpoint, so save its weights to `weights/eva_x/eva_x_base_patch16_mim_weights.pt`
+as `{"model": state_dict}` first.
 
 ## Ensembles
 

@@ -1,0 +1,16 @@
+# Stage 2 of ImageNet -> CheXpert -> NIH: convnext_base at 448px with the backbone from
+# experiments/convnext_base_chexpert_pretrain.yaml (train that first, seed 42). Larger sibling of ConvNeXt-T/S, with more stochastic depth.
+# Batch size is provisional until measured with src/benchmark.py.
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  model_name: convnext_base
+  image_size: 448
+  batch_size: 16
+  num_epochs: 9
+  drop_path: 0.3
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/convnext_base_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]

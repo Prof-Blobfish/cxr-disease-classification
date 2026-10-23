@@ -9,29 +9,72 @@ from typing import Any
 import torch
 import torch.nn as nn
 from torchvision.models import (
+    ConvNeXt_Base_Weights,
     ConvNeXt_Small_Weights,
     ConvNeXt_Tiny_Weights,
     DenseNet121_Weights,
+    EfficientNet_V2_M_Weights,
     EfficientNet_V2_S_Weights,
+    MaxVit_T_Weights,
     ResNet50_Weights,
+    Swin_V2_B_Weights,
     ViT_B_16_Weights,
+    convnext_base,
     convnext_small,
     convnext_tiny,
     densenet121,
+    efficientnet_v2_m,
     efficientnet_v2_s,
+    maxvit_t,
     resnet50,
+    swin_v2_b,
     vit_b_16,
 )
 
-# model_name -> (constructor, ImageNet weights, attribute holding the classifier head)
+from torchvision.ops import StochasticDepth
+
+from utils import PROJECT_ROOT
+
+# Weights-only copy of EVA-X-B (huggingface.co/MapleF/eva_x, eva_x_base_patch16_merged520k_mim.pt,
+# MIT/Apache-2.0); the original is a DeepSpeed checkpoint with optimizer state.
+EVA_X_BASE_WEIGHTS = "weights/eva_x/eva_x_base_patch16_mim_weights.pt"
+
+
+def eva_x_base(weights: str | None = None, image_size: int = 224, stochastic_depth_prob: float = 0.0) -> nn.Module:
+    """EVA-X ViT-B/16 (Yao et al., npj Digit Med 2025): the EVA-02 architecture with masked image
+    modelling on ~520k chest X-rays (NIH, CheXpert, MIMIC-CXR; the authors exclude NIH test images).
+    Built with timm's EVA implementation, which converts the original checkpoint layout; the position
+    embedding is resampled to image_size and RoPE interpolated from its 14x14 pretraining grid."""
+    from timm.models.eva import Eva, checkpoint_filter_fn
+
+    model = Eva(img_size=image_size, patch_size=16, embed_dim=768, depth=12, num_heads=12, qkv_fused=False,
+                mlp_ratio=4 * 2 / 3, swiglu_mlp=True, scale_mlp=True, use_rot_pos_emb=True,
+                ref_feat_shape=(14, 14), global_pool="avg", drop_path_rate=stochastic_depth_prob)
+    if weights is not None:
+        state = torch.load(PROJECT_ROOT / weights, map_location="cpu", weights_only=True)["model"]
+        result = model.load_state_dict(checkpoint_filter_fn(state, model), strict=False)
+        # Pretrained by masked image modelling, so there is no classifier; build_model replaces it anyway.
+        if set(result.missing_keys) != {"head.weight", "head.bias"} or result.unexpected_keys:
+            raise RuntimeError(f"EVA-X checkpoint mismatch: missing {result.missing_keys}, unexpected {result.unexpected_keys}")
+    return model
+
+
+# model_name -> (constructor, pretrained weights, attribute holding the classifier head)
 ARCHITECTURES = {
     "densenet121": (densenet121, DenseNet121_Weights.DEFAULT, "classifier"),
     "resnet50": (resnet50, ResNet50_Weights.DEFAULT, "fc"),
     "convnext_tiny": (convnext_tiny, ConvNeXt_Tiny_Weights.DEFAULT, "classifier"),
     "convnext_small": (convnext_small, ConvNeXt_Small_Weights.DEFAULT, "classifier"),
+    "convnext_base": (convnext_base, ConvNeXt_Base_Weights.DEFAULT, "classifier"),
     "efficientnet_v2_s": (efficientnet_v2_s, EfficientNet_V2_S_Weights.DEFAULT, "classifier"),
+    "efficientnet_v2_m": (efficientnet_v2_m, EfficientNet_V2_M_Weights.DEFAULT, "classifier"),
+    "swin_v2_b": (swin_v2_b, Swin_V2_B_Weights.DEFAULT, "head"),
+    # MaxViT's window partitions are fixed at construction: image_size must be a multiple of 224.
+    "maxvit_t": (maxvit_t, MaxVit_T_Weights.DEFAULT, "classifier"),
     # SWAG end-to-end weights are fixed at 384px (set image_size: 384); no stochastic depth.
     "vit_b_16": (vit_b_16, ViT_B_16_Weights.IMAGENET1K_SWAG_E2E_V1, "heads"),
+    # Chest X-ray pretrained (not ImageNet); see eva_x_base.
+    "eva_x_base": (eva_x_base, EVA_X_BASE_WEIGHTS, "head"),
 }
 
 
@@ -45,14 +88,27 @@ def _architecture(cfg: dict[str, Any]):
 def build_model(cfg: dict[str, Any], num_classes: int) -> nn.Module:
     constructor, weights, head_attr = _architecture(cfg)
     kwargs = {}
-    if cfg.get("drop_path") is not None:  # stochastic depth; ConvNeXt and EfficientNet only
+    if cfg.get("drop_path") is not None:  # stochastic depth; not torchvision's ViT, DenseNet or ResNet
         kwargs["stochastic_depth_prob"] = float(cfg["drop_path"])
     pretrained = cfg.get("pretrained", True)
-    if constructor is vit_b_16 and not pretrained:
-        # Without weights torchvision builds ViT for 224px; size the position embedding for the
-        # configured input instead (and for a domain checkpoint trained at that size).
-        kwargs["image_size"] = int(cfg["image_size"])
-    model = constructor(weights=weights if pretrained else None, **kwargs)
+    image_size = int(cfg.get("image_size", 224))
+    if (constructor is vit_b_16 and not pretrained) or constructor is eva_x_base:
+        # Size the position embedding for the configured input (torchvision's ViT defaults to 224px
+        # without weights), so it matches a domain checkpoint trained at that size.
+        kwargs["image_size"] = image_size
+    if constructor is maxvit_t:
+        kwargs["input_size"] = (image_size, image_size)
+    fixed_drop_path = kwargs.pop("stochastic_depth_prob", None) if constructor in (swin_v2_b, maxvit_t) else None
+    if constructor is maxvit_t:
+        # torchvision only loads MaxViT weights at 224px, but no weight depends on the input size
+        # (attention windows are 7x7), so build at image_size and load them directly.
+        model = constructor(weights=None, **kwargs)
+        if pretrained:
+            model.load_state_dict(weights.get_state_dict(progress=True))
+    else:
+        model = constructor(weights=weights if pretrained else None, **kwargs)
+    if fixed_drop_path is not None:
+        _rescale_drop_path(model, fixed_drop_path)
 
     head = getattr(model, head_attr)
     if isinstance(head, nn.Sequential):  # ConvNeXt: LayerNorm -> Flatten -> Linear; EfficientNet: Dropout -> Linear
@@ -62,8 +118,17 @@ def build_model(cfg: dict[str, Any], num_classes: int) -> nn.Module:
     return model
 
 
+def _rescale_drop_path(model: nn.Module, drop_path: float) -> None:
+    """torchvision's swin_v2_b and maxvit_t fix their stochastic depth (0.5 and 0.2) and reject the
+    argument; scale the builder's per-block schedule so its maximum is drop_path."""
+    layers = [module for module in model.modules() if isinstance(module, StochasticDepth)]
+    peak = max(layer.p for layer in layers)
+    for layer in layers:
+        layer.p = layer.p * drop_path / peak if peak > 0 else drop_path
+
+
 def build_parameter_groups(model: nn.Module, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Backbone and head groups, head last. With optimizer.layer_decay (ViT only), the
+    """Backbone and head groups, head last. With optimizer.layer_decay (ViT-style models only), the
     backbone is split per transformer block, each block's LR scaled by decay ** depth-from-top."""
     _, _, head_attr = _architecture(cfg)
     optimizer_cfg = cfg["optimizer"]
@@ -81,14 +146,18 @@ def build_parameter_groups(model: nn.Module, cfg: dict[str, Any]) -> list[dict[s
         backbone = [param for param in model.parameters() if id(param) not in head_ids]
         return [{"params": backbone, "lr": backbone_lr, "weight_decay": weight_decay}, head_group]
 
-    if not hasattr(model, "encoder") or not hasattr(model.encoder, "layers"):
-        raise ValueError("optimizer.layer_decay is only supported for ViT models.")
-    num_layers = len(model.encoder.layers)
+    # Block prefix, block-index position in the name, final-norm prefixes: torchvision ViT, then timm.
+    if hasattr(model, "encoder") and hasattr(model.encoder, "layers"):
+        num_layers, block_prefix, index_at, final_prefixes = len(model.encoder.layers), "encoder.layers.", 2, ("encoder.ln",)
+    elif hasattr(model, "blocks"):
+        num_layers, block_prefix, index_at, final_prefixes = len(model.blocks), "blocks.", 1, ("norm.", "fc_norm.")
+    else:
+        raise ValueError("optimizer.layer_decay is only supported for ViT-style models.")
 
     def depth(name: str) -> int:  # 0 = patch embedding, 1..num_layers = blocks, num_layers + 1 = final norm
-        if name.startswith("encoder.layers."):
-            return int(name.split(".")[2].removeprefix("encoder_layer_")) + 1
-        if name.startswith("encoder.ln"):
+        if name.startswith(block_prefix):
+            return int(name.split(".")[index_at].removeprefix("encoder_layer_")) + 1
+        if name.startswith(final_prefixes):
             return num_layers + 1
         return 0
 
@@ -98,7 +167,7 @@ def build_parameter_groups(model: nn.Module, cfg: dict[str, Any]) -> list[dict[s
             continue
         layer = depth(name)
         # Standard ViT fine-tuning: no weight decay on biases, norms, position embedding, class token.
-        decay = param.ndim > 1 and name not in {"class_token", "encoder.pos_embedding"}
+        decay = param.ndim > 1 and name not in {"class_token", "encoder.pos_embedding", "cls_token", "pos_embed"}
         group = groups.setdefault((layer, decay), {
             "params": [],
             "lr": backbone_lr * float(layer_decay) ** (num_layers + 1 - layer),
@@ -184,6 +253,13 @@ def load_domain_pretrained_checkpoint(
             # Grayscale stem (e.g. TorchXRayVision): our images are grey replicated to RGB,
             # so spreading the weights over three channels gives the same response.
             tensor = tensor.repeat(1, 3, 1, 1) / 3
+        if key == "pos_embed" and target is not None and tensor.shape != target.shape:
+            # timm ViT pretrained at another image size (e.g. CheXpert at 384px, NIH at 448px):
+            # resample the patch-grid position embedding, keeping the class token's.
+            from timm.layers import resample_abs_pos_embed
+            prefix = int(getattr(model, "num_prefix_tokens", 1))
+            grid = int(round((target.shape[1] - prefix) ** 0.5))
+            tensor = resample_abs_pos_embed(tensor, new_size=(grid, grid), num_prefix_tokens=prefix)
         if backbone_only and key.startswith(head_prefixes):
             skipped_head_keys.append(key)
         elif key not in model_state:
