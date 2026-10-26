@@ -30,6 +30,12 @@ from torchvision.models import (
     swin_v2_b,
     vit_b_16,
 )
+from torchvision.models.swin_transformer import (
+    PatchMergingV2,
+    ShiftedWindowAttentionV2,
+    SwinTransformer,
+    SwinTransformerBlockV2,
+)
 
 from torchvision.ops import StochasticDepth
 
@@ -56,6 +62,36 @@ def eva_x_base(weights: str | None = None, image_size: int = 224, stochastic_dep
         # Pretrained by masked image modelling, so there is no classifier; build_model replaces it anyway.
         if set(result.missing_keys) != {"head.weight", "head.bias"} or result.unexpected_keys:
             raise RuntimeError(f"EVA-X checkpoint mismatch: missing {result.missing_keys}, unexpected {result.unexpected_keys}")
+    return model
+
+
+# Swin attention buffers computed from the window size, not learned; rebuilt when it changes.
+SWIN_WINDOW_BUFFERS = ("relative_coords_table", "relative_position_index")
+
+
+def swin_v2_b_window(window_size: int, weights: Swin_V2_B_Weights | None = None,
+                     pretrained_window_size: int = 8) -> SwinTransformer:
+    """swin_v2_b with a window_size x window_size attention window (torchvision fixes 8x8). At 448px,
+    8x8 windows don't tile stages 3-4 (28x28, 14x14 tokens), which torchvision pads with zero tokens
+    that attention does not mask; 14x14 windows tile every stage. Swin-V2's position bias is an MLP of
+    log-spaced relative coordinates, so it carries over to the new window when the coordinates are
+    normalized by the pretraining window (as in the official code), not the new one."""
+    model = SwinTransformer(patch_size=[4, 4], embed_dim=128, depths=[2, 2, 18, 2], num_heads=[4, 8, 16, 32],
+                            window_size=[window_size, window_size], stochastic_depth_prob=0.5,
+                            block=SwinTransformerBlockV2, downsample_layer=PatchMergingV2)
+    coords = torch.arange(-(window_size - 1), window_size, dtype=torch.float32)
+    table = torch.stack(torch.meshgrid([coords, coords], indexing="ij")).permute(1, 2, 0).unsqueeze(0)
+    table = table / (pretrained_window_size - 1) * 8
+    table = torch.sign(table) * torch.log2(table.abs() + 1.0) / 3.0
+    for module in model.modules():
+        if isinstance(module, ShiftedWindowAttentionV2):
+            module.relative_coords_table.copy_(table)
+    if weights is not None:
+        state = {key: value for key, value in weights.get_state_dict(progress=True).items()
+                 if not key.endswith(SWIN_WINDOW_BUFFERS)}
+        result = model.load_state_dict(state, strict=False)
+        if any(not key.endswith(SWIN_WINDOW_BUFFERS) for key in result.missing_keys) or result.unexpected_keys:
+            raise RuntimeError(f"Swin checkpoint mismatch: missing {result.missing_keys}, unexpected {result.unexpected_keys}")
     return model
 
 
@@ -105,6 +141,8 @@ def build_model(cfg: dict[str, Any], num_classes: int) -> nn.Module:
         model = constructor(weights=None, **kwargs)
         if pretrained:
             model.load_state_dict(weights.get_state_dict(progress=True))
+    elif constructor is swin_v2_b and cfg.get("swin_window_size"):
+        model = swin_v2_b_window(int(cfg["swin_window_size"]), weights if pretrained else None)
     else:
         model = constructor(weights=weights if pretrained else None, **kwargs)
     if fixed_drop_path is not None:
@@ -128,7 +166,7 @@ def _rescale_drop_path(model: nn.Module, drop_path: float) -> None:
 
 
 def build_parameter_groups(model: nn.Module, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Backbone and head groups, head last. With optimizer.layer_decay (ViT-style models only), the
+    """Backbone and head groups, head last. With optimizer.layer_decay (ViT-style models and Swin), the
     backbone is split per transformer block, each block's LR scaled by decay ** depth-from-top."""
     _, _, head_attr = _architecture(cfg)
     optimizer_cfg = cfg["optimizer"]
@@ -146,17 +184,34 @@ def build_parameter_groups(model: nn.Module, cfg: dict[str, Any]) -> list[dict[s
         backbone = [param for param in model.parameters() if id(param) not in head_ids]
         return [{"params": backbone, "lr": backbone_lr, "weight_decay": weight_decay}, head_group]
 
-    # Block prefix, block-index position in the name, final-norm prefixes: torchvision ViT, then timm.
+    # Depth of each block's parameter-name prefix (1..num_layers) and the final-norm prefixes:
+    # torchvision ViT, timm ViT, then torchvision Swin.
     if hasattr(model, "encoder") and hasattr(model.encoder, "layers"):
-        num_layers, block_prefix, index_at, final_prefixes = len(model.encoder.layers), "encoder.layers.", 2, ("encoder.ln",)
+        prefixes = {f"encoder.layers.{name}.": index + 1 for index, name in enumerate(model.encoder.layers._modules)}
+        final_prefixes = ("encoder.ln",)
     elif hasattr(model, "blocks"):
-        num_layers, block_prefix, index_at, final_prefixes = len(model.blocks), "blocks.", 1, ("norm.", "fc_norm.")
+        prefixes = {f"blocks.{index}.": index + 1 for index in range(len(model.blocks))}
+        final_prefixes = ("norm.", "fc_norm.")
+    elif isinstance(model, SwinTransformer):
+        # features.0 is the patch embedding; stages of blocks alternate with patch merging, which
+        # shares the depth of the block that follows it.
+        prefixes, block = {}, 0
+        for index, stage in enumerate(list(model.features)[1:], start=1):
+            if isinstance(stage, nn.Sequential):
+                for position in range(len(stage)):
+                    block += 1
+                    prefixes[f"features.{index}.{position}."] = block
+            else:
+                prefixes[f"features.{index}."] = block + 1
+        final_prefixes = ("norm.",)
     else:
-        raise ValueError("optimizer.layer_decay is only supported for ViT-style models.")
+        raise ValueError("optimizer.layer_decay is only supported for ViT-style models and Swin.")
+    num_layers = max(prefixes.values())
 
     def depth(name: str) -> int:  # 0 = patch embedding, 1..num_layers = blocks, num_layers + 1 = final norm
-        if name.startswith(block_prefix):
-            return int(name.split(".")[index_at].removeprefix("encoder_layer_")) + 1
+        for prefix, layer in prefixes.items():
+            if name.startswith(prefix):
+                return layer
         if name.startswith(final_prefixes):
             return num_layers + 1
         return 0
@@ -166,8 +221,10 @@ def build_parameter_groups(model: nn.Module, cfg: dict[str, Any]) -> list[dict[s
         if id(param) in head_ids:
             continue
         layer = depth(name)
-        # Standard ViT fine-tuning: no weight decay on biases, norms, position embedding, class token.
-        decay = param.ndim > 1 and name not in {"class_token", "encoder.pos_embedding", "cls_token", "pos_embed"}
+        # Standard ViT fine-tuning: no weight decay on biases, norms, position embedding, class token
+        # (nor Swin-V2's attention temperatures).
+        decay = (param.ndim > 1 and name not in {"class_token", "encoder.pos_embedding", "cls_token", "pos_embed"}
+                 and not name.endswith("logit_scale"))
         group = groups.setdefault((layer, decay), {
             "params": [],
             "lr": backbone_lr * float(layer_decay) ** (num_layers + 1 - layer),
@@ -245,6 +302,7 @@ def load_domain_pretrained_checkpoint(
     compatible_state: dict[str, torch.Tensor] = {}
     skipped_head_keys: list[str] = []
     shape_mismatch_keys: list[str] = []
+    rebuilt_buffer_keys: list[str] = []
     unexpected_keys: list[str] = []
     for key, tensor in checkpoint_state.items():
         target = model_state.get(key)
@@ -264,12 +322,14 @@ def load_domain_pretrained_checkpoint(
             skipped_head_keys.append(key)
         elif key not in model_state:
             unexpected_keys.append(key)
+        elif model_state[key].shape != tensor.shape and key.endswith(SWIN_WINDOW_BUFFERS):
+            rebuilt_buffer_keys.append(key)  # pretrained with another window (swin_window_size); keep the model's
         elif model_state[key].shape != tensor.shape:
             shape_mismatch_keys.append(key)
         else:
             compatible_state[key] = tensor
 
-    backbone_keys = [key for key in model_state if not key.startswith(head_prefixes)]
+    backbone_keys = [key for key in model_state if not key.startswith(head_prefixes) and key not in rebuilt_buffer_keys]
     matched_backbone_keys = [key for key in compatible_state if key in backbone_keys]
     match_ratio = len(matched_backbone_keys) / max(len(backbone_keys), 1)
     min_match_ratio = float(init_cfg.get("min_backbone_match_ratio", 0.95))
@@ -302,6 +362,7 @@ def load_domain_pretrained_checkpoint(
         "matched_tensor_count": len(compatible_state),
         "skipped_head_tensor_count": len(skipped_head_keys),
         "shape_mismatch_keys": shape_mismatch_keys,
+        "rebuilt_window_buffer_count": len(rebuilt_buffer_keys),
         "unexpected_checkpoint_keys": unexpected_keys,
         "missing_model_keys": list(incompatible.missing_keys),
     }
