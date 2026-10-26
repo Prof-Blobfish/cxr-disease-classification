@@ -82,22 +82,30 @@ def run_epoch(
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         ema: AveragedModel | None = None,
         hflip_tta: bool = False,
+        grad_clip_norm: float | None = None,
+        grad_spike_threshold: float | None = None,
         desc: str = "",
 ) -> dict:
     """Train when an optimizer is given, otherwise evaluate and collect float32 logits.
 
-    Training steps the scheduler and updates the EMA every batch. Evaluation can
-    average logits over each image and its horizontal flip.
+    Training steps the scheduler and updates the EMA every batch, clipping the global
+    gradient norm to grad_clip_norm when set (inf only measures it). Steps whose norm
+    exceeds grad_spike_threshold record the parameters with the largest gradients.
+    Evaluation can average logits over each image and its horizontal flip.
     """
     training = optimizer is not None
     model.train(training)
 
     total_loss, num_examples = 0.0, 0
     logits_all, targets_all, image_ids = [], [], []
+    grad_norms, grad_spikes = [], []
+    if grad_spike_threshold is not None:
+        grad_clip_norm = math.inf if grad_clip_norm is None else grad_clip_norm
+        named = [(name.replace("_orig_mod.", ""), p) for name, p in model.named_parameters() if p.requires_grad]
 
     with torch.set_grad_enabled(training):
         progress = tqdm(loader, desc=desc, leave=False)
-        for batch in progress:
+        for step, batch in enumerate(progress):
             images = batch["image"].to(device, non_blocking=True)
             if channels_last:
                 images = images.contiguous(memory_format=torch.channels_last)
@@ -121,6 +129,17 @@ def run_epoch(
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
+                if grad_clip_norm is not None:
+                    scaler.unscale_(optimizer)  # clip true gradients, not fp16-scaled ones
+                    grad_norms.append(torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm))
+                    if grad_spike_threshold is not None and len(grad_spikes) < 300 and grad_norms[-1] > grad_spike_threshold:
+                        # Norms before clipping (clip_grad_norm_ scales the gradients in place).
+                        scale = max(1.0, grad_norms[-1].item() / grad_clip_norm)
+                        present = [(name, p.grad) for name, p in named if p.grad is not None]
+                        norms = torch.stack(torch._foreach_norm([g.float() for _, g in present])).cpu() * scale
+                        top = norms.topk(min(8, len(norms)))
+                        grad_spikes.append({"step": step, "norm": grad_norms[-1].item(), "loss": loss.item(),
+                                            "top": [[present[i][0], norms[i].item()] for i in top.indices.tolist()]})
                 scaler.step(optimizer)
                 scaler.update()
                 if scheduler is not None:
@@ -138,6 +157,14 @@ def run_epoch(
             progress.set_postfix(loss=f"{total_loss / num_examples:.4f}")
 
     result = {"loss": total_loss / num_examples}
+    if grad_spike_threshold is not None:
+        result["grad_spikes"] = grad_spikes
+        result["grad_norms"] = torch.stack(grad_norms).float().cpu().numpy() if grad_norms else np.zeros(0)
+    if grad_norms:
+        norms = torch.stack(grad_norms).float()
+        norms = norms[torch.isfinite(norms)]  # fp16 overflow steps are skipped by the scaler
+        if len(norms):
+            result["grad_norm_mean"], result["grad_norm_max"] = norms.mean().item(), norms.max().item()
     if not training:
         result["logits"] = torch.cat(logits_all).numpy()
         result["targets"] = torch.cat(targets_all).numpy().round().astype(np.int8)
@@ -284,12 +311,17 @@ def run_training(
         runtime_model = torch.compile(model, mode=compile_mode)
         runtime_eval_model = runtime_model if ema is None else torch.compile(eval_model, mode=compile_mode)
     hflip_tta = bool(cfg.get("tta_hflip", False))
+    grad_clip_norm = float(cfg["grad_clip_norm"]) if cfg.get("grad_clip_norm") is not None else None
+    grad_spike_threshold = float(cfg["grad_spike_threshold"]) if cfg.get("grad_spike_threshold") is not None else None
+    min_val_auroc = cfg.get("min_val_auroc")  # stop a run whose val AUROC falls below this (a collapse)
 
     def evaluate(loader: DataLoader, desc: str) -> tuple[dict, dict]:
         output = run_epoch(runtime_eval_model, loader, criterion, device, amp_dtype, channels_last,
                            hflip_tta=hflip_tta, desc=desc)
         metrics = ranking_metrics(sigmoid(output["logits"]), output["targets"], bundle.class_names, cfg.get("clinical_score"))
         metrics["loss"] = output["loss"]
+        # Spread of each output across images: ~0 means the model has collapsed to one prediction.
+        metrics["logit_std"] = float(output["logits"].std(axis=0).mean())
         return output, metrics
 
     # ---- training state
@@ -322,7 +354,11 @@ def run_training(
 
         train = run_epoch(runtime_model, train_loader, criterion, device, amp_dtype, channels_last,
                           optimizer=optimizer, scaler=scaler, scheduler=scheduler, ema=ema,
+                          grad_clip_norm=grad_clip_norm, grad_spike_threshold=grad_spike_threshold,
                           desc=f"Train {epoch}/{num_epochs}")
+        if grad_spike_threshold is not None:
+            np.save(run_dir / f"grad_norms_epoch{epoch}.npy", train["grad_norms"])
+            save_json(run_dir / f"grad_spikes_epoch{epoch}.json", train["grad_spikes"])
         _, val = evaluate(val_loader, f"Val {epoch}/{num_epochs}")
         value = val[selection_metric]
 
@@ -333,8 +369,10 @@ def run_training(
             "val_macro_auroc": val["macro_auroc"],
             "val_macro_auprc": val["macro_auprc"],
             "val_clinical_score": val["clinical_score"],
+            "val_logit_std": val["logit_std"],
             "lr_backbone": optimizer.param_groups[-2]["lr"],  # top backbone layer under layer_decay
             "lr_head": optimizer.param_groups[-1]["lr"],
+            **{key: train[key] for key in ("grad_norm_mean", "grad_norm_max") if key in train},
         })
         keep = epoch == int(fixed_epoch) if fixed_epoch is not None else is_better(value, best_value, direction)
         if keep:
@@ -362,6 +400,10 @@ def run_training(
               f"AUROC {val['macro_auroc']:.4f} AUPRC {val['macro_auprc']:.4f} clinical {val['clinical_score']:.4f}"
               f"{'  <- best' if best_epoch == epoch else ''}")
 
+        if min_val_auroc is not None and val["macro_auroc"] < float(min_val_auroc):
+            stop_reason = "collapsed"
+            print(f"Stopping: val AUROC {val['macro_auroc']:.4f} is below min_val_auroc {float(min_val_auroc)}")
+            break
         if report_epoch is not None:
             report_epoch(value, epoch)
         if fixed_epoch is not None and epoch >= int(fixed_epoch):
