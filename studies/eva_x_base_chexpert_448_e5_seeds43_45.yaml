@@ -1,0 +1,18 @@
+# Seeds 43 and 45 of eva_x_base_chexpert_448_e5 (as _seed44): EVA-X carries 0.6 of the arch_v2/v6 ensemble weight, so more seeds of it are the likeliest ensemble gain.
+base_config: experiments/vit_b_16_v1.yaml
+overrides:
+  model_name: eva_x_base
+  image_size: 448
+  batch_size: 24
+  num_epochs: 5
+  optimizer.backbone_lr: 0.0001
+  optimizer.layer_decay: 0.65
+  drop_path: 0.1
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/eva_x_base_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: EVA-X -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs
+    backbone_only: true
+seeds:
+- 43
+- 45

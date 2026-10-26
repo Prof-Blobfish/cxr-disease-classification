@@ -1,0 +1,17 @@
+# eva_x_base_chexpert_448 with 5 epochs instead of 8. That run peaked at epoch 3 while the cosine
+# schedule was still at ~85% of peak LR, then overfit; a shorter schedule anneals over the useful part.
+base_config: experiments/vit_b_16_v1.yaml
+overrides:
+  model_name: eva_x_base
+  image_size: 448
+  batch_size: 24
+  num_epochs: 5
+  optimizer.backbone_lr: 1.0e-04
+  optimizer.layer_decay: 0.65
+  drop_path: 0.1
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/eva_x_base_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "EVA-X -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]

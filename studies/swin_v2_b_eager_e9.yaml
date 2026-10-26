@@ -1,0 +1,19 @@
+# Swin-V2-B with torch.compile off: compiled training gave wrong gradients (norms 1e3-5e4 on some steps vs
+# 0.4 eager, measured on train.py's own training loop), which collapsed swin_v2_b_chexpert_448 at val AUROC 0.500.
+# 9 epochs: the 5-epoch run (swin_v2_b_eager) peaked at its last epoch, so it may have stopped short.
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  model_name: swin_v2_b
+  image_size: 448
+  batch_size: 16
+  num_epochs: 9
+  amp_dtype: bfloat16
+  compile_model: false
+  grad_spike_threshold: 10.0  # log the parameters behind each gradient spike (norm 0.4 at the start)
+  min_val_auroc: 0.70         # stop at the first collapsed epoch (collapsed runs: 0.50)
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/swin_v2_b_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]

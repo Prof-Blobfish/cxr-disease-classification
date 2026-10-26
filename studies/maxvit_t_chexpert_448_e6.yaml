@@ -1,0 +1,15 @@
+# maxvit_t_chexpert_448 with a 6-epoch schedule: the 9-epoch runs peaked at epoch 6 (seed 42) and 5 (seed 44)
+# and then declined; a shorter cosine schedule anneals by then (ConvNeXt-Base gained this way, 0.3361 -> 0.3411 test).
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  model_name: maxvit_t
+  image_size: 448
+  batch_size: 16
+  num_epochs: 6
+  amp_dtype: bfloat16
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/maxvit_t_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42, 44]

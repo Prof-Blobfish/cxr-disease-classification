@@ -1,0 +1,18 @@
+# convnext_base_chexpert_448 with 5 epochs instead of 9, at the inherited ConvNeXt-T backbone LR and
+# about half of it. That run peaked at epoch 4 (LR still ~75% of peak), then overfit through epoch 9.
+base_config: experiments/convnext_tiny_v8.yaml
+overrides:
+  model_name: convnext_base
+  image_size: 448
+  batch_size: 16
+  num_epochs: 5
+  drop_path: 0.3
+  pretrained: false
+  domain_pretrained:
+    path: outputs/experiments/convnext_base_chexpert_pretrain/seed42/checkpoints/best.pt
+    source: "ImageNet -> CheXpert-v1.0-small (frontal, 13 findings), 6 epochs"
+    backbone_only: true
+seeds: [42]
+sampler: grid
+search_space:
+  optimizer.backbone_lr: {choices: [4.0e-05, 7.95e-05]}

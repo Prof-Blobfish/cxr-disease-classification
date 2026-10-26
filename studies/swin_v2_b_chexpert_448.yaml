@@ -1,6 +1,7 @@
 # Stage 2 of ImageNet -> CheXpert -> NIH: swin_v2_b at 448px with the backbone from
 # experiments/swin_v2_b_chexpert_pretrain.yaml (train that first, seed 42). Windowed transformer, for ensemble diversity.
 # Batch size is provisional until measured with src/benchmark.py.
+# Collapsed (val AUROC 0.500): torch.compile gave wrong gradients for Swin-V2-B; see swin_v2_b_eager.yaml.
 base_config: experiments/convnext_tiny_v8.yaml
 overrides:
   model_name: swin_v2_b
