@@ -12,7 +12,7 @@ if not dataset_path:
 
 chexpert_path = os.getenv("CHEXPERT_PATH")  # optional; the CheXpert-v1.0-small directory
 
-NUM_WORKERS = 6
+NUM_WORKERS = 4  # each Windows worker commits ~2.6 GB; 6 left too little RAM headroom (a run was stopped for low memory)
 EVAL_NUM_WORKERS = 4  # not persistent (see train.py), so these exist only during evaluation
 RANDOM_SEED = 42
 VAL_SPLIT = 0.15
